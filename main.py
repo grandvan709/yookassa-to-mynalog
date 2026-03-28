@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from yookassa import Configuration, Payment
 from tenacity import retry, stop_after_attempt, wait_exponential
 import config
+from telegram_notifier import TelegramNotifier
 
 LOG_DIR = "logs"
 if not os.path.exists(LOG_DIR):
@@ -84,7 +85,7 @@ class MoyNalogAPI:
             'Sec-Fetch-Site': 'same-origin'
         }
         
-        self.client = httpx.AsyncClient(headers=self.headers, timeout=30.0 )
+        self.client = httpx.AsyncClient(headers=self.headers, timeout=30.0)
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def authenticate(self):
@@ -103,7 +104,7 @@ class MoyNalogAPI:
         }
 
         try:
-            response = await self.client.post(url, json=payload )
+            response = await self.client.post(url, json=payload)
             if response.status_code != 200:
                 logging.error(f"Ошибка авторизации (Код {response.status_code}): {response.text}")
                 raise Exception(f"HTTP {response.status_code}")
@@ -200,6 +201,23 @@ class SyncManager:
         self.state_file = f"{LOG_DIR}/sync_state.json"
         self.state = self.load_state()
 
+        # Инициализируем Telegram-нотификатор если настроен
+        if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
+            thread_id = int(config.TELEGRAM_THREAD_ID) if config.TELEGRAM_THREAD_ID else None
+            self.notifier = TelegramNotifier(
+                bot_token=config.TELEGRAM_BOT_TOKEN,
+                chat_id=config.TELEGRAM_CHAT_ID,
+                thread_id=thread_id,
+            )
+            logging.info("✓ Telegram-уведомления включены.")
+        else:
+            self.notifier = None
+
+    async def startup_notify(self):
+        """Вызывается один раз после успешного старта."""
+        if self.notifier:
+            await self.notifier.send_startup()
+
     def load_state(self):
         if os.path.exists(self.state_file):
             try:
@@ -262,9 +280,14 @@ class SyncManager:
             
             if not new_payments:
                 logging.info("✓ Новых платежей не найдено.")
+                if self.notifier:
+                    await self.notifier.send_no_payments()
                 return
 
             logging.info(f"✓ Найдено новых платежей: {len(new_payments)}")
+
+            if self.notifier:
+                self.notifier.on_sync_start(len(new_payments))
             
             successful = 0
             failed = 0
@@ -288,26 +311,36 @@ class SyncManager:
                         self.state["last_sync_time"] = payment.created_at
                         self.save_state()
                         successful += 1
+                        if self.notifier:
+                            self.notifier.on_payment_success(amount)
                     else:
                         self.save_state()
                         failed += 1
                         logging.warning(f"Пропуск платежа {payment.id} из-за ошибки. "
                                         f"Платёж заблокирован от повторной отправки для предотвращения дублей.")
+                        if self.notifier:
+                            self.notifier.on_payment_error(payment.id, "ошибка регистрации дохода")
                 except Exception as e:
                     failed += 1
                     logging.error(f"Ошибка при обработке платежа {payment.id}: {e}")
+                    if self.notifier:
+                        self.notifier.on_payment_error(payment.id, str(e)[:80])
 
             logging.info(f"Результат: успешно={successful}, ошибок={failed}")
         except Exception as e:
             logging.error(f"Критическая ошибка при синхронизации: {e}", exc_info=True)
         finally:
             await self.nalog.close()
+            # Отправляем итоговое сообщение в Telegram
+            if self.notifier:
+                await self.notifier.send_summary()
             logging.info("Синхронизация завершена.")
             logging.info("="*60)
 
 async def main():
     try:
         manager = SyncManager()
+        await manager.startup_notify()
         await manager.sync()
     except Exception as e:
         logging.critical(f"Критическая ошибка: {e}", exc_info=True)
