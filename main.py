@@ -203,7 +203,12 @@ class SyncManager:
 
         # Инициализируем Telegram-нотификатор если настроен
         if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
-            thread_id = int(config.TELEGRAM_THREAD_ID) if config.TELEGRAM_THREAD_ID else None
+            thread_id = None
+            if config.TELEGRAM_THREAD_ID:
+                try:
+                    thread_id = int(config.TELEGRAM_THREAD_ID)
+                except ValueError:
+                    logging.warning(f"TELEGRAM_THREAD_ID имеет некорректное значение: '{config.TELEGRAM_THREAD_ID}'. Сообщения будут отправляться в основной чат.")
             self.notifier = TelegramNotifier(
                 bot_token=config.TELEGRAM_BOT_TOKEN,
                 chat_id=config.TELEGRAM_CHAT_ID,
@@ -214,8 +219,8 @@ class SyncManager:
             self.notifier = None
 
     async def startup_notify(self):
-        """Вызывается один раз после успешного старта."""
-        if self.notifier:
+        """Вызывается один раз после успешного старта контейнера (не при cron-запусках)."""
+        if self.notifier and os.environ.get("TELEGRAM_STARTUP_NOTIFY") == "1":
             await self.notifier.send_startup()
 
     def load_state(self):
