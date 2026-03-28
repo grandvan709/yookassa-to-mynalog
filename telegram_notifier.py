@@ -153,7 +153,9 @@ class TelegramNotifier:
                     )
         except Exception as e:
             # Ошибки Telegram не должны ломать основной процесс
-            logger.warning(f"Не удалось отправить уведомление в Telegram: {e}")
+            # Редактируем токен из сообщения об ошибке на случай если он попал в текст исключения
+            safe_msg = str(e).replace(self.bot_token, "<redacted>")
+            logger.warning(f"Не удалось отправить уведомление в Telegram: {safe_msg}")
 
 
 def _plural(n: int, one: str, few: str, many: str) -> str:
