@@ -33,8 +33,10 @@ def validate_config():
     if missing:
         raise ValueError(f"Отсутствуют обязательные переменные окружения: {', '.join(missing)}")
 
-    # Валидация Telegram: если задан токен, должен быть и chat_id
+    # Валидация Telegram: если задан токен, должен быть и chat_id, и наоборот
     if TELEGRAM_BOT_TOKEN and not TELEGRAM_CHAT_ID:
         raise ValueError("TELEGRAM_BOT_TOKEN задан, но TELEGRAM_CHAT_ID отсутствует.")
+    if TELEGRAM_CHAT_ID and not TELEGRAM_BOT_TOKEN:
+        raise ValueError("TELEGRAM_CHAT_ID задан, но TELEGRAM_BOT_TOKEN отсутствует.")
 
     return True
