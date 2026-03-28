@@ -1,3 +1,4 @@
+import html
 import httpx
 import logging
 from datetime import datetime
@@ -46,8 +47,8 @@ class TelegramNotifier:
             "🚀 <b>YooKassa → Мой Налог запущен</b>\n"
             f"📅 {date_str}\n"
             "\n"
-            "✅ Авторизация успешна\n"
-            "⏰ Синхронизация по расписанию включена"
+            "⚙️ Контейнер успешно стартовал\n"
+            "⏰ Синхронизация по расписанию будет включена после первого запуска"
         )
         await self._send(text)
 
@@ -122,7 +123,9 @@ class TelegramNotifier:
             lines.append("")
             lines.append("⚠️ Ошибки:")
             for pid, err in self._errors[:5]:
-                lines.append(f"  • <code>{pid}</code>: {err}")
+                safe_pid = html.escape(pid)
+                safe_err = html.escape(err)
+                lines.append(f"  • <code>{safe_pid}</code>: {safe_err}")
             if len(self._errors) > 5:
                 lines.append(f"  ...и ещё {len(self._errors) - 5}")
 
