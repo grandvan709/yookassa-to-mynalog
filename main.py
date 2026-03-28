@@ -244,6 +244,7 @@ class SyncManager:
             json.dump(self.state, f)
 
     async def get_new_yookassa_payments(self):
+        """Возвращает (список платежей, успех). При ошибке ЮКассы возвращает ([], False)."""
         new_payments = []
         last_sync = self.state.get("last_sync_time")
         skip_ids = set(self.state["processed_payments"]) | set(self.state["pending_payments"])
@@ -267,8 +268,9 @@ class SyncManager:
                         new_payments.append(payment)
         except Exception as e:
             logging.error(f"Ошибка ЮKassa: {e}")
+            return [], False
 
-        return new_payments
+        return new_payments, True
 
     async def sync(self):
         logging.info("="*60)
@@ -281,8 +283,12 @@ class SyncManager:
             logging.warning("Эти платежи пропущены для предотвращения дублей. Проверьте их вручную в ЛК налоговой.")
         
         try:
-            new_payments = await self.get_new_yookassa_payments()
-            
+            new_payments, fetch_ok = await self.get_new_yookassa_payments()
+
+            if not fetch_ok:
+                logging.error("✗ Не удалось получить платежи из ЮКассы. Синхронизация прервана.")
+                return
+
             if not new_payments:
                 logging.info("✓ Новых платежей не найдено.")
                 if self.notifier:
