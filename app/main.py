@@ -78,8 +78,12 @@ class SyncManager:
             getattr(n, method)(*args)
 
     async def startup_notify(self):
-        if self.notifier and os.environ.get("TELEGRAM_STARTUP_NOTIFY") == "1":
+        if os.environ.get("STARTUP_NOTIFY") != "1":
+            return
+        if self.notifier:
             await self.notifier.send_startup()
+        if self.email_notifier:
+            await self.email_notifier.send_startup()
 
     def _ensure_state_fields(self, state):
         defaults = {

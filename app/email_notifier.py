@@ -77,6 +77,24 @@ class EmailNotifier:
     def on_refund_skipped(self):
         self._refund_skipped += 1
 
+    async def send_startup(self):
+        date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+        body = f"""<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; max-width:600px; margin:20px auto; padding:24px; color:#333; background:#fff;">
+  <h2 style="color:#2c3e50; border-bottom:2px solid #4CAF50; padding-bottom:8px; margin-top:0;">
+    🚀 YooKassa → Мой Налог запущен
+  </h2>
+  <p style="color:#7f8c8d; margin:0 0 20px;">📅 {date_str}</p>
+  <p style="margin:8px 0;">⚙️ Контейнер успешно стартовал</p>
+  <p style="margin:8px 0;">⏰ Синхронизация по расписанию будет включена после первого запуска</p>
+  <hr style="margin-top:24px; border:none; border-top:1px solid #eee;">
+  <p style="color:#bbb; font-size:12px; text-align:center; margin:8px 0 0;">YooKassa → Мой Налог</p>
+</body>
+</html>"""
+        await asyncio.to_thread(self._send_sync, body)
+
     async def send_summary(self):
         has_activity = (
             self._payments or self._errors or
