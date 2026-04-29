@@ -24,6 +24,17 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TELEGRAM_THREAD_ID = os.getenv("TELEGRAM_THREAD_ID")
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY")
 
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL")
+SMTP_FROM_NAME = os.getenv("SMTP_FROM_NAME")
+SMTP_TO_EMAIL = os.getenv("SMTP_TO_EMAIL")
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes")
+EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT", "Синхронизация чеков в налоговой")
+
+
 def validate_config():
     required_vars = [
         ("YOOKASSA_SHOP_ID", YOOKASSA_SHOP_ID),
@@ -40,5 +51,16 @@ def validate_config():
         raise ValueError("TELEGRAM_BOT_TOKEN задан, но TELEGRAM_CHAT_ID отсутствует.")
     if TELEGRAM_CHAT_ID and not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_CHAT_ID задан, но TELEGRAM_BOT_TOKEN отсутствует.")
+
+    smtp_partial = [
+        ("SMTP_HOST", SMTP_HOST),
+        ("SMTP_USER", SMTP_USER),
+        ("SMTP_PASSWORD", SMTP_PASSWORD),
+        ("SMTP_TO_EMAIL", SMTP_TO_EMAIL),
+    ]
+    smtp_set = [name for name, val in smtp_partial if val]
+    smtp_missing = [name for name, val in smtp_partial if not val]
+    if smtp_set and smtp_missing:
+        raise ValueError(f"Email-уведомления настроены частично. Отсутствуют: {', '.join(smtp_missing)}")
 
     return True

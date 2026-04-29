@@ -186,5 +186,7 @@ class TelegramNotifier:
                     safe_text = resp.text.replace(self.bot_token, "***")
                     logger.warning(f"Telegram API вернул {resp.status_code}: {safe_text}")
         except Exception as e:
-            safe_msg = str(e).replace(self.bot_token, "***")
-            logger.warning(f"Не удалось отправить уведомление в Telegram: {safe_msg}")
+            err_type = type(e).__name__
+            err_text = str(e) or "(нет деталей)"
+            safe_msg = err_text.replace(self.bot_token, "***")
+            logger.warning(f"Не удалось отправить уведомление в Telegram [{err_type}]: {safe_msg}")

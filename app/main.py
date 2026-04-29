@@ -7,6 +7,7 @@ from yookassa import Configuration, Payment, Refund
 import config
 from nalog_api import MoyNalogAPI
 from telegram_notifier import TelegramNotifier
+from email_notifier import EmailNotifier
 from utils import build_template_vars
 
 LOG_DIR = "logs"
@@ -54,9 +55,35 @@ class SyncManager:
         else:
             self.notifier = None
 
+        if config.SMTP_HOST and config.SMTP_USER and config.SMTP_PASSWORD and config.SMTP_TO_EMAIL:
+            self.email_notifier = EmailNotifier(
+                host=config.SMTP_HOST,
+                port=config.SMTP_PORT,
+                user=config.SMTP_USER,
+                password=config.SMTP_PASSWORD,
+                to_email=config.SMTP_TO_EMAIL,
+                from_email=config.SMTP_FROM_EMAIL,
+                from_name=config.SMTP_FROM_NAME,
+                use_tls=config.SMTP_USE_TLS,
+                subject=config.EMAIL_SUBJECT,
+            )
+            logging.info("✓ Email-уведомления включены.")
+        else:
+            self.email_notifier = None
+
+        self.event_notifiers = [n for n in (self.notifier, self.email_notifier) if n]
+
+    def _emit(self, method, *args):
+        for n in self.event_notifiers:
+            getattr(n, method)(*args)
+
     async def startup_notify(self):
-        if self.notifier and os.environ.get("TELEGRAM_STARTUP_NOTIFY") == "1":
+        if os.environ.get("STARTUP_NOTIFY") != "1":
+            return
+        if self.notifier:
             await self.notifier.send_startup()
+        if self.email_notifier:
+            await self.email_notifier.send_startup()
 
     def _ensure_state_fields(self, state):
         defaults = {
@@ -155,8 +182,7 @@ class SyncManager:
         if pending:
             logging.warning(f"⚠ Обнаружено {len(pending)} платежей в статусе 'pending' (возможно, были отправлены в налоговую, но статус неизвестен): {pending}")
             logging.warning("Эти платежи пропущены для предотвращения дублей. Проверьте их вручную в ЛК налоговой.")
-            if self.notifier:
-                self.notifier.on_pending_found(len(pending))
+            self._emit("on_pending_found", len(pending))
 
         try:
             new_payments = await self.get_new_yookassa_payments()
@@ -165,8 +191,7 @@ class SyncManager:
                 logging.info("✓ Новых платежей не найдено.")
             else:
                 logging.info(f"✓ Найдено новых платежей: {len(new_payments)}")
-                if self.notifier:
-                    self.notifier.on_sync_start(len(new_payments))
+                self._emit("on_sync_start", len(new_payments))
 
             successful = 0
             failed = 0
@@ -190,8 +215,7 @@ class SyncManager:
                         receipt_uuid = await self.nalog.find_income(description, amount)
                         if receipt_uuid:
                             logging.info(f"✓ Чек найден в налоговой (был создан несмотря на ошибку ответа)")
-                            if self.notifier:
-                                self.notifier.on_payment_verified()
+                            self._emit("on_payment_verified")
                             break
 
                         if attempt < 3:
@@ -203,19 +227,16 @@ class SyncManager:
                         self.state["last_sync_time"] = payment.created_at
                         self.save_state()
                         successful += 1
-                        if self.notifier:
-                            self.notifier.on_payment_success(amount)
+                        self._emit("on_payment_success", amount)
                     else:
                         failed += 1
                         logging.warning(f"Пропуск платежа {payment.id}: не удалось зарегистрировать после 3 попыток. "
                                         f"Повторная попытка при следующей синхронизации.")
-                        if self.notifier:
-                            self.notifier.on_payment_error(payment.id, "ошибка регистрации дохода")
+                        self._emit("on_payment_error", payment.id, "ошибка регистрации дохода")
                 except Exception as e:
                     failed += 1
                     logging.error(f"Ошибка при обработке платежа {payment.id}: {e}")
-                    if self.notifier:
-                        self.notifier.on_payment_error(payment.id, str(e)[:80])
+                    self._emit("on_payment_error", payment.id, str(e)[:80])
 
             if new_payments:
                 logging.info(f"Результат платежей: успешно={successful}, ошибок={failed}")
@@ -237,8 +258,7 @@ class SyncManager:
                             self.state["processed_refunds"].append(refund.id)
                             self.state["last_refund_sync_time"] = refund.created_at
                             self.save_state()
-                            if self.notifier:
-                                self.notifier.on_refund_skipped()
+                            self._emit("on_refund_skipped")
                             continue
 
                         success = await self.nalog.cancel_income(receipt_uuid)
@@ -249,18 +269,15 @@ class SyncManager:
                             del self.state["receipt_map"][refund.payment_id]
                             self.save_state()
                             cancelled += 1
-                            if self.notifier:
-                                self.notifier.on_refund_cancelled()
+                            self._emit("on_refund_cancelled")
                         else:
                             cancel_failed += 1
                             logging.warning(f"Не удалось аннулировать чек {receipt_uuid} для возврата {refund.id}")
-                            if self.notifier:
-                                self.notifier.on_refund_error()
+                            self._emit("on_refund_error")
                     except Exception as e:
                         cancel_failed += 1
                         logging.error(f"Ошибка при обработке возврата {refund.id}: {e}")
-                        if self.notifier:
-                            self.notifier.on_refund_error()
+                        self._emit("on_refund_error")
 
                 logging.info(f"Результат возвратов: аннулировано={cancelled}, ошибок={cancel_failed}")
             else:
@@ -275,6 +292,8 @@ class SyncManager:
             await self.nalog.close()
             if self.notifier:
                 await self.notifier.send_summary()
+            if self.email_notifier:
+                await self.email_notifier.send_summary()
             logging.info("Синхронизация завершена.")
             logging.info("="*60)
 
