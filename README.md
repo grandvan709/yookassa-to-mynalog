@@ -89,6 +89,7 @@ sudo nano .env
 | `SYNC_START_DATE` | -24ч | Дата начала синхронизации (YYYY-MM-DD) |
 | `INCOME_DESCRIPTION_TEMPLATE` | `Платеж #{description}` | Шаблон описания дохода (см. ниже) |
 | `CRON_SCHEDULE` | `0 */4 * * *` | Расписание cron (каждые 4 часа) |
+| `YOOKASSA_NALOG_PROXY` | — | SOCKS5 прокси для ЮKassa и ФНС (для серверов вне РФ). Формат: `socks5h://user:pass@host:1080` |
 
 ### Telegram-уведомления (опционально)
 
