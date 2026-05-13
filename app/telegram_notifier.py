@@ -190,7 +190,7 @@ class TelegramNotifier:
             payload["message_thread_id"] = self.thread_id
 
         try:
-            async with httpx.AsyncClient(timeout=15.0, proxy=self.proxy) as client:
+            async with httpx.AsyncClient(timeout=15.0, proxy=self.proxy, trust_env=False) as client:
                 resp = await client.post(self.api_url, json=payload)
                 if resp.status_code == 200:
                     logger.info("✓ Уведомление отправлено в Telegram.")

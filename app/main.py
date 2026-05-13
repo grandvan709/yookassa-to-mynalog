@@ -24,9 +24,6 @@ logging.basicConfig(
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-logging.getLogger("yookassa").setLevel(logging.DEBUG)
-logging.getLogger("urllib3").setLevel(logging.DEBUG)
-
 
 class SyncManager:
     def __init__(self):
