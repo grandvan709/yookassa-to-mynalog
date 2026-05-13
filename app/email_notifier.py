@@ -45,6 +45,7 @@ class EmailNotifier:
         self._verified: int = 0
         self._pending_count: int = 0
         self._refund_skipped: int = 0
+        self._yookassa_errors: list[str] = []
 
     def on_sync_start(self, found_count: int):
         self._start_time = datetime.now()
@@ -55,6 +56,7 @@ class EmailNotifier:
         self._cancel_errors = 0
         self._verified = 0
         self._refund_skipped = 0
+        self._yookassa_errors = []
 
     def on_pending_found(self, count: int):
         self._pending_count = count
@@ -76,6 +78,9 @@ class EmailNotifier:
 
     def on_refund_skipped(self):
         self._refund_skipped += 1
+
+    def on_yookassa_error(self, message: str):
+        self._yookassa_errors.append(message)
 
     async def send_startup(self):
         date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
@@ -99,7 +104,7 @@ class EmailNotifier:
         has_activity = (
             self._payments or self._errors or
             self._cancelled or self._cancel_errors or
-            self._refund_skipped
+            self._refund_skipped or self._yookassa_errors
         )
         if not has_activity:
             return
@@ -147,6 +152,18 @@ class EmailNotifier:
         </h2>
         <p style="color:#7f8c8d; margin:0 0 20px;">📅 {date_str}</p>
         """)
+
+        if self._yookassa_errors:
+            err_items = "".join(
+                f'<li style="margin:4px 0;"><code style="background:#f8d7da; padding:2px 6px; border-radius:3px; font-size:13px;">{html_lib.escape(err)}</code></li>'
+                for err in self._yookassa_errors
+            )
+            sections.append(f"""
+            <div style="background:#f8d7da; border-left:4px solid #dc3545; padding:12px 16px; margin-bottom:16px; border-radius:4px;">
+              <strong style="color:#721c24;">⚠️ Ошибка получения данных из ЮКассы</strong>
+              <ul style="margin:8px 0 0; padding-left:20px; color:#721c24;">{err_items}</ul>
+            </div>
+            """)
 
         if self._pending_count:
             sections.append(f"""

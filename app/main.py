@@ -131,21 +131,27 @@ class SyncManager:
         }
 
         try:
-            res = Payment.list(params)
+            res = await asyncio.wait_for(asyncio.to_thread(Payment.list, params), timeout=120)
             for payment in res.items:
                 if payment.id not in skip_ids:
                     new_payments.append(payment)
 
             while res.next_cursor:
                 params["cursor"] = res.next_cursor
-                res = Payment.list(params)
+                res = await asyncio.wait_for(asyncio.to_thread(Payment.list, params), timeout=120)
                 for payment in res.items:
                     if payment.id not in skip_ids:
                         new_payments.append(payment)
+        except asyncio.TimeoutError:
+            logging.error("Таймаут получения платежей ЮKassa (>120s)")
+            return new_payments, "Таймаут API ЮКассы (>120s)"
         except Exception as e:
-            logging.error(f"Ошибка ЮKassa: {e}")
+            err_type = type(e).__name__
+            err_text = str(e) or "нет деталей"
+            logging.error(f"Ошибка ЮKassa: [{err_type}] {err_text}")
+            return new_payments, f"[{err_type}] {err_text}"
 
-        return new_payments
+        return new_payments, None
 
     async def get_new_refunds(self):
         new_refunds = []
@@ -157,21 +163,27 @@ class SyncManager:
         }
 
         try:
-            res = Refund.list(params)
+            res = await asyncio.wait_for(asyncio.to_thread(Refund.list, params), timeout=120)
             for refund in res.items:
                 if refund.id not in self.state["processed_refunds"]:
                     new_refunds.append(refund)
 
             while res.next_cursor:
                 params["cursor"] = res.next_cursor
-                res = Refund.list(params)
+                res = await asyncio.wait_for(asyncio.to_thread(Refund.list, params), timeout=120)
                 for refund in res.items:
                     if refund.id not in self.state["processed_refunds"]:
                         new_refunds.append(refund)
+        except asyncio.TimeoutError:
+            logging.error("Таймаут получения возвратов ЮKassa (>120s)")
+            return new_refunds, "Таймаут API ЮКассы (>120s)"
         except Exception as e:
-            logging.error(f"Ошибка получения возвратов ЮKassa: {e}")
+            err_type = type(e).__name__
+            err_text = str(e) or "нет деталей"
+            logging.error(f"Ошибка получения возвратов ЮKassa: [{err_type}] {err_text}")
+            return new_refunds, f"[{err_type}] {err_text}"
 
-        return new_refunds
+        return new_refunds, None
 
     async def sync(self):
         logging.info("="*60)
@@ -185,10 +197,15 @@ class SyncManager:
             self._emit("on_pending_found", len(pending))
 
         try:
-            new_payments = await self.get_new_yookassa_payments()
+            new_payments, payments_error = await self.get_new_yookassa_payments()
+
+            if payments_error:
+                logging.warning(f"⚠ Ошибка получения платежей из ЮКассы: {payments_error}")
+                self._emit("on_yookassa_error", f"Платежи: {payments_error}")
 
             if not new_payments:
-                logging.info("✓ Новых платежей не найдено.")
+                if not payments_error:
+                    logging.info("✓ Новых платежей не найдено.")
             else:
                 logging.info(f"✓ Найдено новых платежей: {len(new_payments)}")
                 self._emit("on_sync_start", len(new_payments))
@@ -241,7 +258,11 @@ class SyncManager:
             if new_payments:
                 logging.info(f"Результат платежей: успешно={successful}, ошибок={failed}")
 
-            new_refunds = await self.get_new_refunds()
+            new_refunds, refunds_error = await self.get_new_refunds()
+
+            if refunds_error:
+                logging.warning(f"⚠ Ошибка получения возвратов из ЮКассы: {refunds_error}")
+                self._emit("on_yookassa_error", f"Возвраты: {refunds_error}")
 
             if new_refunds:
                 logging.info(f"✓ Найдено новых возвратов: {len(new_refunds)}")
@@ -281,9 +302,11 @@ class SyncManager:
 
                 logging.info(f"Результат возвратов: аннулировано={cancelled}, ошибок={cancel_failed}")
             else:
-                logging.info("✓ Новых возвратов не найдено.")
+                if not refunds_error:
+                    logging.info("✓ Новых возвратов не найдено.")
 
-            if not new_payments and not new_refunds and self.notifier and not pending:
+            if (not new_payments and not new_refunds and self.notifier
+                    and not pending and not payments_error and not refunds_error):
                 await self.notifier.send_no_payments()
 
         except Exception as e:

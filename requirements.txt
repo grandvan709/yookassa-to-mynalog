@@ -14,4 +14,4 @@ requests==2.32.5
 tenacity==9.0.0
 urllib3==2.6.3
 wrapt==2.0.1
-yookassa==3.9.0
+yookassa==3.10.1

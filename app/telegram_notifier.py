@@ -35,6 +35,7 @@ class TelegramNotifier:
         self._verified: int = 0
         self._pending_count: int = 0
         self._refund_skipped: int = 0
+        self._yookassa_errors: list[str] = []
 
     def on_sync_start(self, found_count: int):
         self._start_time = datetime.now()
@@ -45,6 +46,7 @@ class TelegramNotifier:
         self._cancel_errors = 0
         self._verified = 0
         self._refund_skipped = 0
+        self._yookassa_errors = []
 
     def on_pending_found(self, count: int):
         self._pending_count = count
@@ -66,6 +68,9 @@ class TelegramNotifier:
 
     def on_refund_skipped(self):
         self._refund_skipped += 1
+
+    def on_yookassa_error(self, message: str):
+        self._yookassa_errors.append(message)
 
     async def send_startup(self):
         date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
@@ -91,7 +96,7 @@ class TelegramNotifier:
     async def send_summary(self):
         if (not self._payments and not self._errors and not self._cancelled
                 and not self._cancel_errors and not self._pending_count
-                and not self._refund_skipped):
+                and not self._refund_skipped and not self._yookassa_errors):
             return
 
         text = self._build_message()
@@ -113,6 +118,13 @@ class TelegramNotifier:
             f"📅 {date_str}",
             "",
         ]
+
+        if self._yookassa_errors:
+            lines.append("⚠️ <b>Ошибка получения данных из ЮКассы</b>")
+            for err in self._yookassa_errors:
+                safe_err = html.escape(err)
+                lines.append(f"  • <code>{safe_err}</code>")
+            lines.append("")
 
         if self._pending_count:
             lines.append(f"⏳ Pending-платежей: <b>{self._pending_count}</b> (требуют ручной проверки)")
