@@ -25,6 +25,7 @@ docker-compose.yml
 # Documentation
 *.md
 LICENSE
+docs/
 
 # IDE
 .vscode
