@@ -7,10 +7,15 @@ from utils import generate_device_id_from_login
 
 
 class MoyNalogAPI:
-    def __init__(self, login, password):
+    def __init__(self, login, password, auth_method="password", refresh_token=None, on_refresh_token=None):
         self.login = login
         self.password = password
+        self.auth_method = auth_method
+        self.refresh_token = refresh_token
+        self.on_refresh_token = on_refresh_token
         self.token = None
+
+        logging.info(f"Метод авторизации Мой Налог: {auth_method}")
 
         if config.DEVICE_ID:
             self.device_id = config.DEVICE_ID
@@ -39,8 +44,13 @@ class MoyNalogAPI:
 
         self.client = httpx.AsyncClient(headers=self.headers, timeout=30.0)
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     async def authenticate(self):
+        if self.auth_method == "refresh":
+            return await self._authenticate_refresh()
+        return await self._authenticate_password()
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def _authenticate_password(self):
         url = "https://lknpd.nalog.ru/api/v1/auth/lkfl"
         payload = {
             "username": self.login,
@@ -71,6 +81,46 @@ class MoyNalogAPI:
             return True
         except Exception as e:
             logging.error(f"Ошибка авторизации в Мой Налог: {e}")
+            raise
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    async def _authenticate_refresh(self):
+        url = "https://lknpd.nalog.ru/api/v1/auth/token"
+        payload = {
+            "deviceInfo": {
+                "sourceDeviceId": self.device_id,
+                "sourceType": "WEB",
+                "appVersion": "1.0.0",
+                "metaDetails": {
+                    "userAgent": self.user_agent
+                }
+            },
+            "refreshToken": self.refresh_token
+        }
+
+        try:
+            response = await self.client.post(url, json=payload)
+            if response.status_code != 200:
+                logging.error(f"Ошибка авторизации по refresh token (Код {response.status_code}): {response.text}")
+                raise Exception(f"HTTP {response.status_code}")
+
+            data = response.json()
+            self.token = data.get("token")
+            if not self.token:
+                raise Exception("Не удалось получить токен авторизации по refresh token.")
+
+            new_refresh = data.get("refreshToken")
+            if new_refresh and new_refresh != self.refresh_token:
+                self.refresh_token = new_refresh
+                logging.info("Получен обновлённый refreshToken, сохраняем в state.")
+                if self.on_refresh_token:
+                    self.on_refresh_token(new_refresh)
+
+            self.client.headers.update({'Authorization': f'Bearer {self.token}'})
+            logging.info("✓ Успешная авторизация в Мой Налог (refresh token).")
+            return True
+        except Exception as e:
+            logging.error(f"Ошибка авторизации в Мой Налог по refresh token: {e}")
             raise
 
     async def add_income(self, name, amount, date):

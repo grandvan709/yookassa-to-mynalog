@@ -13,6 +13,8 @@ YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
 YOOKASSA_API_KEY = os.getenv("YOOKASSA_API_KEY")
 MOY_NALOG_LOGIN = os.getenv("MOY_NALOG_LOGIN")
 MOY_NALOG_PASSWORD = os.getenv("MOY_NALOG_PASSWORD")
+MOY_NALOG_AUTH_METHOD = os.getenv("MOY_NALOG_AUTH_METHOD", "password").lower()
+MOY_NALOG_REFRESH_TOKEN = os.getenv("MOY_NALOG_REFRESH_TOKEN")
 
 YOOKASSA_NALOG_PROXY = os.getenv("YOOKASSA_NALOG_PROXY")
 if YOOKASSA_NALOG_PROXY:
@@ -41,16 +43,26 @@ EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT", "Синхронизация чеко�
 
 
 def validate_config():
+    if MOY_NALOG_AUTH_METHOD not in ("password", "refresh"):
+        raise ValueError(f"MOY_NALOG_AUTH_METHOD имеет недопустимое значение: '{MOY_NALOG_AUTH_METHOD}' (допустимо: password, refresh)")
+
     required_vars = [
         ("YOOKASSA_SHOP_ID", YOOKASSA_SHOP_ID),
         ("YOOKASSA_API_KEY", YOOKASSA_API_KEY),
-        ("MOY_NALOG_LOGIN", MOY_NALOG_LOGIN),
-        ("MOY_NALOG_PASSWORD", MOY_NALOG_PASSWORD),
     ]
+
+    if MOY_NALOG_AUTH_METHOD == "password":
+        required_vars.append(("MOY_NALOG_LOGIN", MOY_NALOG_LOGIN))
+        required_vars.append(("MOY_NALOG_PASSWORD", MOY_NALOG_PASSWORD))
+    else:
+        required_vars.append(("MOY_NALOG_REFRESH_TOKEN", MOY_NALOG_REFRESH_TOKEN))
 
     missing = [var for var, val in required_vars if not val]
     if missing:
         raise ValueError(f"Отсутствуют обязательные переменные окружения: {', '.join(missing)}")
+
+    if MOY_NALOG_AUTH_METHOD == "refresh" and not DEVICE_ID and not MOY_NALOG_LOGIN:
+        raise ValueError("В режиме refresh необходимо задать DEVICE_ID или MOY_NALOG_LOGIN (источник deviceId).")
 
     if TELEGRAM_BOT_TOKEN and not TELEGRAM_CHAT_ID:
         raise ValueError("TELEGRAM_BOT_TOKEN задан, но TELEGRAM_CHAT_ID отсутствует.")
