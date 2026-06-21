@@ -34,9 +34,16 @@ class SyncManager:
             raise
 
         Configuration.configure(config.YOOKASSA_SHOP_ID, config.YOOKASSA_API_KEY)
-        self.nalog = MoyNalogAPI(config.MOY_NALOG_LOGIN, config.MOY_NALOG_PASSWORD)
         self.state_file = f"{LOG_DIR}/sync_state.json"
         self.state = self.load_state()
+        refresh_token = self.state.get("refresh_token") or config.MOY_NALOG_REFRESH_TOKEN
+        self.nalog = MoyNalogAPI(
+            config.MOY_NALOG_LOGIN,
+            config.MOY_NALOG_PASSWORD,
+            auth_method=config.MOY_NALOG_AUTH_METHOD,
+            refresh_token=refresh_token,
+            on_refresh_token=self._save_refresh_token,
+        )
 
         if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
             thread_id = None
@@ -119,6 +126,10 @@ class SyncManager:
     def save_state(self):
         with open(self.state_file, 'w') as f:
             json.dump(self.state, f)
+
+    def _save_refresh_token(self, token):
+        self.state["refresh_token"] = token
+        self.save_state()
 
     async def get_new_yookassa_payments(self):
         new_payments = []
