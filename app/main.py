@@ -53,7 +53,6 @@ class SyncManager:
                 thread_id=thread_id,
                 proxy=config.TELEGRAM_PROXY,
             )
-            logging.info("✓ Telegram-уведомления включены.")
         else:
             self.notifier = None
 
@@ -69,7 +68,6 @@ class SyncManager:
                 use_tls=config.SMTP_USE_TLS,
                 subject=config.EMAIL_SUBJECT,
             )
-            logging.info("✓ Email-уведомления включены.")
         else:
             self.email_notifier = None
 
@@ -369,11 +367,13 @@ def _parse_version(v: str) -> tuple:
     return tuple(parts)
 
 
-def print_banner(manager):
+def print_banner():
     bar = "━" * 48
     title = f"🧾  YooKassa → Мой Налог  v{__version__}"
-    telegram_status = colorize("✓ включён", "green") if manager.notifier else colorize("· выключен", "gray")
-    email_status = colorize("✓ включён", "green") if manager.email_notifier else colorize("· выключен", "gray")
+    telegram_on = bool(config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID)
+    email_on = bool(config.SMTP_HOST and config.SMTP_USER and config.SMTP_PASSWORD and config.SMTP_TO_EMAIL)
+    telegram_status = colorize("✓ включён", "green") if telegram_on else colorize("· выключен", "gray")
+    email_status = colorize("✓ включён", "green") if email_on else colorize("· выключен", "gray")
 
     rows = [
         ("Часовой пояс", config.TZ or "—"),
@@ -393,8 +393,8 @@ def print_banner(manager):
 
 async def main():
     try:
+        print_banner()
         manager = SyncManager()
-        print_banner(manager)
         await manager.startup_notify()
         await manager.sync()
     except Exception as e:
