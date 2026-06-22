@@ -1,11 +1,6 @@
 #!/bin/bash
 set -e
 
-echo "=========================================="
-echo "YooKassa to MyNalog Synchronizer"
-echo "=========================================="
-echo ""
-
 STARTUP_NOTIFY=1 python /app/main.py
 
 CRON_SCHEDULE=$(python -c "import config; print(config.CRON_SCHEDULE)")

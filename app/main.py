@@ -2,9 +2,12 @@ import asyncio
 import json
 import os
 import logging
+import httpx
 from datetime import datetime, timedelta
 from yookassa import Configuration, Payment, Refund
 import config
+from version import __version__
+from logging_config import setup_logging, colorize, ANSI
 from nalog_api import MoyNalogAPI
 from telegram_notifier import TelegramNotifier
 from email_notifier import EmailNotifier
@@ -14,15 +17,7 @@ LOG_DIR = "logs"
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(f"{LOG_DIR}/sync.log", encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+setup_logging(LOG_DIR)
 
 
 class SyncManager:
@@ -131,6 +126,37 @@ class SyncManager:
         self.state["refresh_token"] = token
         self.save_state()
 
+    def check_for_updates(self):
+        last_check = self.state.get("last_update_check")
+        if last_check:
+            try:
+                if datetime.now() - datetime.fromisoformat(last_check) < timedelta(hours=24):
+                    return
+            except ValueError:
+                pass
+
+        try:
+            url = "https://api.github.com/repos/grandvan709/yookassa-to-mynalog/releases/latest"
+            with httpx.Client(trust_env=False, timeout=10.0) as client:
+                resp = client.get(url, headers={"Accept": "application/vnd.github+json"})
+            if resp.status_code == 200:
+                latest = resp.json().get("tag_name", "")
+                if latest and _parse_version(latest) > _parse_version(__version__):
+                    logging.warning(
+                        f"⚠️ Доступна новая версия {latest} (текущая: {__version__}). "
+                        f"https://github.com/grandvan709/yookassa-to-mynalog/releases/latest"
+                    )
+                    self._emit("on_update_available", latest.lstrip("vV"))
+                else:
+                    logging.info(f"✓ Установлена актуальная версия ({__version__}).")
+            else:
+                logging.warning(f"Не удалось проверить обновления (GitHub вернул {resp.status_code}).")
+        except Exception as e:
+            logging.warning(f"Не удалось проверить обновления: [{type(e).__name__}]")
+        finally:
+            self.state["last_update_check"] = datetime.now().isoformat()
+            self.save_state()
+
     async def get_new_yookassa_payments(self):
         new_payments = []
         last_sync = self.state.get("last_sync_time")
@@ -200,6 +226,8 @@ class SyncManager:
         logging.info("="*60)
         logging.info("Начало синхронизации...")
         logging.info(f"Последняя синхронизация: {self.state.get('last_sync_time')}")
+
+        self.check_for_updates()
 
         pending = self.state.get("pending_payments", [])
         if pending:
@@ -316,10 +344,6 @@ class SyncManager:
                 if not refunds_error:
                     logging.info("✓ Новых возвратов не найдено.")
 
-            if (not new_payments and not new_refunds and self.notifier
-                    and not pending and not payments_error and not refunds_error):
-                await self.notifier.send_no_payments()
-
         except Exception as e:
             logging.error(f"Критическая ошибка при синхронизации: {e}", exc_info=True)
         finally:
@@ -332,9 +356,45 @@ class SyncManager:
             logging.info("="*60)
 
 
+def _parse_version(v: str) -> tuple:
+    parts = []
+    for chunk in v.strip().lstrip("vV").split("."):
+        num = ""
+        for ch in chunk:
+            if ch.isdigit():
+                num += ch
+            else:
+                break
+        parts.append(int(num) if num else 0)
+    return tuple(parts)
+
+
+def print_banner(manager):
+    bar = "━" * 48
+    title = f"🧾  YooKassa → Мой Налог  v{__version__}"
+    telegram_status = colorize("✓ включён", "green") if manager.notifier else colorize("· выключен", "gray")
+    email_status = colorize("✓ включён", "green") if manager.email_notifier else colorize("· выключен", "gray")
+
+    rows = [
+        ("Часовой пояс", config.TZ or "—"),
+        ("Авторизация", config.MOY_NALOG_AUTH_METHOD),
+        ("Расписание", config.CRON_SCHEDULE),
+        ("Telegram", telegram_status),
+        ("Email", email_status),
+    ]
+
+    print(colorize(bar, "cyan"))
+    print("  " + colorize(title, "bold"))
+    print(colorize(bar, "cyan"))
+    for label, value in rows:
+        print(f"  {label:<14} {value}")
+    print(colorize(bar, "cyan"))
+
+
 async def main():
     try:
         manager = SyncManager()
+        print_banner(manager)
         await manager.startup_notify()
         await manager.sync()
     except Exception as e:
