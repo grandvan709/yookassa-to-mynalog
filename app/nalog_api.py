@@ -15,8 +15,6 @@ class MoyNalogAPI:
         self.on_refresh_token = on_refresh_token
         self.token = None
 
-        logging.info(f"Метод авторизации Мой Налог: {auth_method}")
-
         if config.DEVICE_ID:
             self.device_id = config.DEVICE_ID
             logging.info(f"Используется deviceId из .env: {self.device_id}")
