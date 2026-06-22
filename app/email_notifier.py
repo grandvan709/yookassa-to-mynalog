@@ -7,6 +7,7 @@ from collections import defaultdict
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr
+from version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class EmailNotifier:
         self._pending_count: int = 0
         self._refund_skipped: int = 0
         self._yookassa_errors: list[str] = []
+        self._update_available: str | None = None
 
     def on_sync_start(self, found_count: int):
         self._start_time = datetime.now()
@@ -82,6 +84,9 @@ class EmailNotifier:
     def on_yookassa_error(self, message: str):
         self._yookassa_errors.append(message)
 
+    def on_update_available(self, latest: str):
+        self._update_available = latest
+
     async def send_startup(self):
         date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
         body = f"""<!DOCTYPE html>
@@ -95,7 +100,7 @@ class EmailNotifier:
   <p style="margin:8px 0;">⚙️ Контейнер успешно стартовал</p>
   <p style="margin:8px 0;">⏰ Синхронизация по расписанию будет включена после первого запуска</p>
   <hr style="margin-top:24px; border:none; border-top:1px solid #eee;">
-  <p style="color:#bbb; font-size:12px; text-align:center; margin:8px 0 0;">YooKassa → Мой Налог</p>
+  <p style="color:#bbb; font-size:12px; text-align:center; margin:8px 0 0;">YooKassa → Мой Налог · v{__version__}</p>
 </body>
 </html>"""
         await asyncio.to_thread(self._send_sync, body)
@@ -104,7 +109,8 @@ class EmailNotifier:
         has_activity = (
             self._payments or self._errors or
             self._cancelled or self._cancel_errors or
-            self._refund_skipped or self._yookassa_errors
+            self._refund_skipped or self._yookassa_errors or
+            self._update_available
         )
         if not has_activity:
             return
@@ -152,6 +158,13 @@ class EmailNotifier:
         </h2>
         <p style="color:#7f8c8d; margin:0 0 20px;">📅 {date_str}</p>
         """)
+
+        if self._update_available:
+            sections.append(f"""
+            <div style="background:#d1ecf1; border-left:4px solid #17a2b8; padding:12px 16px; margin-bottom:16px; border-radius:4px;">
+              <strong style="color:#0c5460;">🆕 Доступна новая версия {html_lib.escape(self._update_available)}</strong>
+            </div>
+            """)
 
         if self._yookassa_errors:
             err_items = "".join(
@@ -243,7 +256,7 @@ class EmailNotifier:
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; max-width:600px; margin:20px auto; padding:24px; color:#333; background:#fff;">
 {''.join(sections)}
 <hr style="margin-top:24px; border:none; border-top:1px solid #eee;">
-<p style="color:#bbb; font-size:12px; text-align:center; margin:8px 0 0;">YooKassa → Мой Налог</p>
+<p style="color:#bbb; font-size:12px; text-align:center; margin:8px 0 0;">YooKassa → Мой Налог · v{__version__}</p>
 </body>
 </html>"""
 

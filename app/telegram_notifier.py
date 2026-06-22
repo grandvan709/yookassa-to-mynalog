@@ -3,6 +3,7 @@ import httpx
 import logging
 from datetime import datetime
 from collections import defaultdict
+from version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class TelegramNotifier:
         self._pending_count: int = 0
         self._refund_skipped: int = 0
         self._yookassa_errors: list[str] = []
+        self._update_available: str | None = None
 
     def on_sync_start(self, found_count: int):
         self._start_time = datetime.now()
@@ -72,10 +74,13 @@ class TelegramNotifier:
     def on_yookassa_error(self, message: str):
         self._yookassa_errors.append(message)
 
+    def on_update_available(self, latest: str):
+        self._update_available = latest
+
     async def send_startup(self):
         date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
         text = (
-            "🚀 <b>YooKassa → Мой Налог запущен</b>\n"
+            f"🚀 <b>YooKassa → Мой Налог запущен</b> <code>v{__version__}</code>\n"
             f"📅 {date_str}\n"
             "\n"
             "⚙️ Контейнер успешно стартовал\n"
@@ -83,20 +88,11 @@ class TelegramNotifier:
         )
         await self._send(text)
 
-    async def send_no_payments(self):
-        date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
-        text = (
-            "🔄 <b>Синхронизация завершена</b>\n"
-            f"📅 {date_str}\n"
-            "\n"
-            "💤 Новых платежей не найдено"
-        )
-        await self._send(text)
-
     async def send_summary(self):
         if (not self._payments and not self._errors and not self._cancelled
                 and not self._cancel_errors and not self._pending_count
-                and not self._refund_skipped and not self._yookassa_errors):
+                and not self._refund_skipped and not self._yookassa_errors
+                and not self._update_available):
             return
 
         text = self._build_message()
@@ -118,6 +114,10 @@ class TelegramNotifier:
             f"📅 {date_str}",
             "",
         ]
+
+        if self._update_available:
+            lines.append(f"🆕 <b>Доступна новая версия {html.escape(self._update_available)}</b>")
+            lines.append("")
 
         if self._yookassa_errors:
             lines.append("⚠️ <b>Ошибка получения данных из ЮКассы</b>")
@@ -177,6 +177,9 @@ class TelegramNotifier:
                 lines.append(f"  • <code>{safe_pid}</code>: {safe_err}")
             if len(self._errors) > 5:
                 lines.append(f"  ...и ещё {len(self._errors) - 5}")
+
+        lines.append("")
+        lines.append(f"<i>YooKassa → Мой Налог · v{__version__}</i>")
 
         return "\n".join(lines)
 
