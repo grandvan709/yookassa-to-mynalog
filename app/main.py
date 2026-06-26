@@ -238,7 +238,7 @@ class SyncManager:
 
             if payments_error:
                 logging.warning(f"⚠ Ошибка получения платежей из ЮКассы: {payments_error}")
-                self._emit("on_yookassa_error", f"Платежи: {payments_error}")
+                self._emit("on_yookassa_error", f"ЮKassa (платежи): {payments_error}")
 
             if not new_payments:
                 if not payments_error:
@@ -286,7 +286,8 @@ class SyncManager:
                         failed += 1
                         logging.warning(f"Пропуск платежа {payment.id}: не удалось зарегистрировать после 3 попыток. "
                                         f"Повторная попытка при следующей синхронизации.")
-                        self._emit("on_payment_error", payment.id, "ошибка регистрации дохода")
+                        reason = self.nalog.last_error or "ошибка регистрации дохода"
+                        self._emit("on_payment_error", payment.id, f"Мой Налог: {reason}")
                 except Exception as e:
                     failed += 1
                     logging.error(f"Ошибка при обработке платежа {payment.id}: {e}")
@@ -299,7 +300,7 @@ class SyncManager:
 
             if refunds_error:
                 logging.warning(f"⚠ Ошибка получения возвратов из ЮКассы: {refunds_error}")
-                self._emit("on_yookassa_error", f"Возвраты: {refunds_error}")
+                self._emit("on_yookassa_error", f"ЮKassa (возвраты): {refunds_error}")
 
             if new_refunds:
                 logging.info(f"✓ Найдено новых возвратов: {len(new_refunds)}")

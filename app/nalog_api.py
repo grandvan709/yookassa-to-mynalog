@@ -14,6 +14,7 @@ class MoyNalogAPI:
         self.refresh_token = refresh_token
         self.on_refresh_token = on_refresh_token
         self.token = None
+        self.last_error = None
 
         if config.DEVICE_ID:
             self.device_id = config.DEVICE_ID
@@ -42,6 +43,15 @@ class MoyNalogAPI:
 
         self.client = httpx.AsyncClient(headers=self.headers, timeout=30.0)
 
+    def _extract_error(self, response):
+        try:
+            message = response.json().get("message")
+            if message:
+                return str(message)[:200]
+        except Exception:
+            pass
+        return f"HTTP {response.status_code}"
+
     async def authenticate(self):
         if self.auth_method == "refresh":
             return await self._authenticate_refresh()
@@ -66,6 +76,7 @@ class MoyNalogAPI:
         try:
             response = await self.client.post(url, json=payload)
             if response.status_code != 200:
+                self.last_error = self._extract_error(response)
                 logging.error(f"Ошибка авторизации (Код {response.status_code}): {response.text}")
                 raise Exception(f"HTTP {response.status_code}")
 
@@ -78,6 +89,8 @@ class MoyNalogAPI:
             logging.info("✓ Успешная авторизация в Мой Налог.")
             return True
         except Exception as e:
+            if not str(e).startswith("HTTP "):
+                self.last_error = f"сервис недоступен ({type(e).__name__})"
             logging.error(f"Ошибка авторизации в Мой Налог: {e}")
             raise
 
@@ -99,6 +112,7 @@ class MoyNalogAPI:
         try:
             response = await self.client.post(url, json=payload)
             if response.status_code != 200:
+                self.last_error = self._extract_error(response)
                 logging.error(f"Ошибка авторизации по refresh token (Код {response.status_code}): {response.text}")
                 raise Exception(f"HTTP {response.status_code}")
 
@@ -118,10 +132,13 @@ class MoyNalogAPI:
             logging.info("✓ Успешная авторизация в Мой Налог (refresh token).")
             return True
         except Exception as e:
+            if not str(e).startswith("HTTP "):
+                self.last_error = f"сервис недоступен ({type(e).__name__})"
             logging.error(f"Ошибка авторизации в Мой Налог по refresh token: {e}")
             raise
 
     async def add_income(self, name, amount, date):
+        self.last_error = None
         if not self.token:
             try:
                 await self.authenticate()
@@ -178,9 +195,11 @@ class MoyNalogAPI:
                 logging.info(f"✓ Доход успешно зарегистрирован: {amount} руб. за '{name}' (чек: {receipt_uuid})")
                 return receipt_uuid
             else:
+                self.last_error = self._extract_error(response)
                 logging.error(f"✗ Ошибка регистрации дохода (Код {response.status_code}): {response.text}")
                 return None
         except Exception as e:
+            self.last_error = self.last_error or f"сбой соединения ({type(e).__name__})"
             logging.error(f"Исключение при регистрации дохода: {e}")
             return None
 
