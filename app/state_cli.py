@@ -183,10 +183,26 @@ def retry_refund(store, refund_id):
         if not adjustment.get("receipt_uuid"):
             print("Нельзя повторить: UUID исходного чека отсутствует.")
             return 2
-        adjustment["status"] = "ready"
+        status = adjustment.get("status")
+        if status in ("cancellation_unknown", "cancellation_rejected"):
+            adjustment["status"] = "ready"
+            message = "повторное аннулирование исходного чека"
+        elif status in (
+            "replacement_unknown", "replacement_rejected", "creating_replacement"
+        ):
+            adjustment["status"] = "cancelled"
+            message = "повторное создание чека на остаток"
+        elif status in ("ready", "cancelled"):
+            message = "повторную обработку"
+        else:
+            print(
+                f"Нельзя безопасно повторить возврат из статуса {status!r}. "
+                "Сначала выполните ручную сверку."
+            )
+            return 2
         adjustment.pop("error", None)
         store.save(state)
-        print(f"Возврат {refund_id} поставлен на повторную обработку.")
+        print(f"Возврат {refund_id} поставлен на {message}.")
         return 0
     finally:
         store.release_lock()

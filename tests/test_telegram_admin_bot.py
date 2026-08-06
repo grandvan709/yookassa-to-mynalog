@@ -32,6 +32,11 @@ class TelegramAdminBotTests(unittest.TestCase):
                 "receipt_success": True,
                 "receipt_errors": True,
             },
+            "receipt_reports": {
+                "enabled": True,
+                "chat_id": "-1001",
+                "thread_id": None,
+            },
         })
 
     def tearDown(self):
@@ -106,6 +111,36 @@ class TelegramAdminBotTests(unittest.TestCase):
         self.assertNotIn("first", message)
         self.assertNotIn("bot-token-secret", message)
         self.assertIn("***", message)
+
+    def test_current_group_topic_can_be_saved_for_receipt_reports(self):
+        self.bot._api = AsyncMock(return_value=True)
+        update = {"callback_query": {
+            "id": "callback-report",
+            "from": {"id": 42},
+            "message": {"chat": {"id": -100777}, "message_thread_id": 321},
+            "data": "report:here",
+        }}
+
+        asyncio.run(self.bot.handle(update))
+
+        report = self.bot.store.load()["receipt_reports"]
+        self.assertEqual("-100777", report["chat_id"])
+        self.assertEqual(321, report["thread_id"])
+
+    def test_replacement_retry_resumes_after_cancellation_not_from_start(self):
+        self.bot.store.save({
+            "pending_payments": [],
+            "pending_refunds": [{
+                "refund_id": "refund-1",
+                "receipt_uuid": "old-receipt",
+                "status": "replacement_unknown",
+            }],
+        })
+
+        asyncio.run(self.bot.retry_queue_item("r", "refund-1"))
+
+        item = self.bot.store.load()["pending_refunds"][0]
+        self.assertEqual("cancelled", item["status"])
 
 
 if __name__ == "__main__":

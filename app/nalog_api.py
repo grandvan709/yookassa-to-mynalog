@@ -489,5 +489,70 @@ class MoyNalogAPI:
 
         return None
 
+    async def get_income_status(self, receipt_uuid, operation_date=None):
+        """Вернуть active/cancelled/not_found/error без повторной записи в ФНС."""
+        self._reset_error()
+        if not self.token:
+            try:
+                await self.authenticate()
+            except Exception as e:
+                logging.error(f"Не удалось авторизоваться для сверки чека: {e}")
+                return "error"
+
+        center = operation_date.astimezone() if operation_date else datetime.now().astimezone()
+        url = "https://lknpd.nalog.ru/api/v1/incomes"
+        params = {
+            "from": (center - timedelta(days=1)).isoformat(timespec="milliseconds"),
+            "to": (center + timedelta(days=1)).isoformat(timespec="milliseconds"),
+            "offset": 0,
+            "sortBy": "operation_time:desc",
+            "limit": 50,
+        }
+        headers = self.headers.copy()
+        headers["Authorization"] = f"Bearer {self.token}"
+
+        try:
+            seen_pages = set()
+            for _ in range(100):
+                response = await self.client.get(url, params=params, headers=headers)
+                if response.status_code == 401:
+                    await self.authenticate()
+                    headers["Authorization"] = f"Bearer {self.token}"
+                    response = await self.client.get(url, params=params, headers=headers)
+                if response.status_code != 200:
+                    self._record_http_error(response)
+                    return "error"
+                try:
+                    incomes = response.json().get("content", [])
+                except Exception as e:
+                    self._record_exception(e)
+                    return "error"
+                marker = tuple(
+                    item.get("approvedReceiptUuid") or item.get("receiptUuid")
+                    for item in incomes
+                )
+                if marker in seen_pages:
+                    self.last_error = "ФНС повторила страницу списка чеков"
+                    self.last_error_kind = "bad_response"
+                    self.last_error_retryable = True
+                    return "error"
+                seen_pages.add(marker)
+                for income in incomes:
+                    income_uuid = income.get("approvedReceiptUuid") or income.get("receiptUuid")
+                    if income_uuid == receipt_uuid:
+                        return "cancelled" if income.get("cancellationInfo") else "active"
+                if len(incomes) < params["limit"]:
+                    return "not_found"
+                params["offset"] += params["limit"]
+        except Exception as e:
+            if self.last_error is None:
+                self._record_exception(e)
+            logging.error(f"Исключение при сверке статуса чека: {self.last_error}")
+            return "error"
+        self.last_error = "достигнут предел страниц при сверке чека"
+        self.last_error_kind = "bad_response"
+        self.last_error_retryable = True
+        return "error"
+
     async def close(self):
         await self.client.aclose()

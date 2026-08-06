@@ -223,6 +223,20 @@ class NalogMoneyTests(unittest.TestCase):
         self.assertEqual("wanted-receipt", result)
         self.assertEqual([0, 50], api.client.offsets)
 
+    def test_receipt_status_distinguishes_cancelled_income(self):
+        api = self.create_api()
+        api.token = "token"
+        api.client = FakeClient(FakeResponse(payload={"content": [{
+            "approvedReceiptUuid": "receipt-cancelled",
+            "cancellationInfo": {"comment": "Возврат средств"},
+        }]}))
+
+        status = asyncio.run(api.get_income_status(
+            "receipt-cancelled", datetime(2026, 1, 1, tzinfo=timezone.utc)
+        ))
+
+        self.assertEqual("cancelled", status)
+
     def test_auth_401_is_not_retried(self):
         api = self.create_auth_api(FakeResponse(401, {"message": "unauthorized"}))
         with self.assertRaises(Exception):

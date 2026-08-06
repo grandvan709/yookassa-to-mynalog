@@ -43,11 +43,13 @@ class FakeNalog:
         failed_receipts=(),
         fail_replacements=False,
         found_receipts=None,
+        income_status="active",
     ):
         self.failed_payment_ids = set(failed_payment_ids)
         self.failed_receipts = set(failed_receipts)
         self.fail_replacements = fail_replacements
         self.found_receipts = found_receipts or {}
+        self.income_status = income_status
         self.last_error = "temporary error"
         self.last_error_retryable = False
         self.last_operation_uncertain = True
@@ -64,6 +66,9 @@ class FakeNalog:
 
     async def find_income(self, description, amount, operation_date=None):
         return self.found_receipts.get(description)
+
+    async def get_income_status(self, receipt_uuid, operation_date=None):
+        return self.income_status
 
     async def cancel_income(self, receipt_uuid):
         self.cancel_calls.append(receipt_uuid)
@@ -140,11 +145,14 @@ def manager_with(
 class CheckpointTests(unittest.TestCase):
     def setUp(self):
         self.original_template = config.INCOME_DESCRIPTION_TEMPLATE
+        self.original_refunds_enabled = config.REFUNDS_ENABLED
         config.INCOME_DESCRIPTION_TEMPLATE = "{id}"
+        config.REFUNDS_ENABLED = True
         logging.disable(logging.CRITICAL)
 
     def tearDown(self):
         config.INCOME_DESCRIPTION_TEMPLATE = self.original_template
+        config.REFUNDS_ENABLED = self.original_refunds_enabled
         logging.disable(logging.NOTSET)
 
     def test_legacy_state_gets_pending_refunds_field(self):
@@ -376,6 +384,31 @@ class CheckpointTests(unittest.TestCase):
         telegram.on_payment_error.assert_not_called()
         email.on_payment_success.assert_called_once()
         email.on_payment_error.assert_called_once()
+
+    def test_success_reports_and_admin_errors_use_separate_telegram_targets(self):
+        manager = manager_with([], [], FakeNalog())
+        admin = SimpleNamespace(
+            on_payment_success=Mock(),
+            on_payment_error=Mock(),
+        )
+        reports = SimpleNamespace(
+            on_payment_success=Mock(),
+            on_payment_error=Mock(),
+        )
+        manager.notifier = admin
+        manager.receipt_notifier = reports
+        manager.email_notifier = None
+        manager.event_notifiers = [admin, reports]
+        manager.state["notification_preferences"] = {"receipt_errors": True}
+        manager.state["receipt_reports"] = {"enabled": True}
+
+        manager._emit("on_payment_success", Decimal("10.00"))
+        manager._emit("on_payment_error", "payment", "error")
+
+        reports.on_payment_success.assert_called_once()
+        reports.on_payment_error.assert_not_called()
+        admin.on_payment_success.assert_not_called()
+        admin.on_payment_error.assert_called_once()
 
     def test_fns_only_worker_does_not_fetch_yookassa(self):
         nalog = FakeNalog()
@@ -658,6 +691,44 @@ class CheckpointTests(unittest.TestCase):
             "replacement-receipt",
             manager.state["receipt_map"]["payment-new"],
         )
+
+    def test_unknown_cancellation_is_reconciled_by_receipt_uuid(self):
+        nalog = FakeNalog(income_status="cancelled")
+        manager = manager_with([], [], nalog)
+        adjustment = {
+            "refund_id": "refund-unknown",
+            "payment_id": "payment-new",
+            "refund_amount": "100.00",
+            "payment_amount": "100.00",
+            "previous_amount": "100.00",
+            "remaining_amount": "0.00",
+            "created_at": "2026-01-03T00:00:00Z",
+            "payment_created_at": "2026-01-01T12:00:00Z",
+            "receipt_uuid": "receipt-new",
+            "replacement_description": "unused",
+            "status": "cancellation_unknown",
+        }
+        manager.state["pending_refunds"] = [adjustment]
+
+        result = asyncio.run(manager._resume_refund_adjustment(adjustment))
+
+        self.assertEqual("cancelled", result)
+        self.assertEqual([], nalog.cancel_calls)
+        self.assertEqual([], manager.state["pending_refunds"])
+
+    def test_refunds_are_disabled_by_default_switch(self):
+        manager = SyncManager.__new__(SyncManager)
+        manager.state = {
+            "last_sync_time": "2026-01-01T00:00:00Z",
+            "processed_refunds": [],
+            "pending_refunds": [],
+        }
+        with patch.object(config, "REFUNDS_ENABLED", False), patch(
+            "main.Refund.list"
+        ) as refund_list:
+            result = asyncio.run(manager.get_new_refunds())
+        self.assertEqual(([], None), result)
+        refund_list.assert_not_called()
 
     def test_two_partial_refunds_update_running_balance(self):
         refunds = [

@@ -58,6 +58,9 @@ class TelegramAdminBot:
             legacy_json_path=LOG_DIR / "sync_state.json",
         )
         self.offset = self._load_offset()
+        self.pending_input = None
+        self._reply_chat_id = self.admin_chat_id
+        self._reply_thread_id = self.thread_id
 
     def _load_offset(self):
         try:
@@ -92,12 +95,13 @@ class TelegramAdminBot:
 
     async def send(self, text, reply_markup=None):
         payload = {
-            "chat_id": self.admin_chat_id,
+            "chat_id": getattr(self, "_reply_chat_id", self.admin_chat_id),
             "text": text[:4000],
             "parse_mode": "HTML",
         }
-        if self.thread_id:
-            payload["message_thread_id"] = self.thread_id
+        reply_thread_id = getattr(self, "_reply_thread_id", self.thread_id)
+        if reply_thread_id:
+            payload["message_thread_id"] = reply_thread_id
         if reply_markup:
             payload["reply_markup"] = reply_markup
         await self._api("sendMessage", **payload)
@@ -118,6 +122,22 @@ class TelegramAdminBot:
     def _state(self):
         return self.store.load() or {}
 
+    async def update_receipt_report(self, *, toggle=False, **values):
+        try:
+            self.store.acquire_lock()
+            state = self._state()
+            report = state.setdefault("receipt_reports", {})
+            if toggle:
+                report["enabled"] = not report.get("enabled", True)
+            report.update(values)
+            self.store.save(state)
+            return True
+        except ConcurrentRunError:
+            await self.send("Синхронизация сейчас выполняется. Повторите через минуту.")
+            return False
+        finally:
+            self.store.release_lock()
+
     @staticmethod
     def _enabled(value):
         return "включены ✅" if value else "выключены ⛔"
@@ -126,7 +146,8 @@ class TelegramAdminBot:
     def _main_keyboard():
         return {
             "keyboard": [
-                ["📊 Статус", "🔔 Уведомления"],
+                ["📊 Статус", "📋 Очередь"],
+                ["🔔 Уведомления", "📣 Отчёты о чеках"],
                 ["💾 Резервные копии", "📄 Логи"],
                 ["ℹ️ Помощь"],
             ],
@@ -143,19 +164,13 @@ class TelegramAdminBot:
 
     async def show_notifications(self):
         preferences = self._state().get("notification_preferences", {})
-        success = preferences.get("receipt_success", True)
         errors = preferences.get("receipt_errors", True)
         await self.send(
             "🔔 <b>Уведомления</b>\n\n"
-            f"Успешные чеки: <b>{self._enabled(success)}</b>\n"
             f"Ошибки регистрации: <b>{self._enabled(errors)}</b>\n\n"
-            "Нажмите кнопку, чтобы изменить настройку.",
+            "Отчёты об успешных чеках настраиваются в отдельном разделе.",
             reply_markup={
                 "inline_keyboard": [
-                    [{
-                        "text": f"Успешные чеки: {'ВКЛ ✅' if success else 'ВЫКЛ ⛔'}",
-                        "callback_data": "notify:receipts:toggle",
-                    }],
                     [{
                         "text": f"Ошибки регистрации: {'ВКЛ ✅' if errors else 'ВЫКЛ ⛔'}",
                         "callback_data": "notify:errors:toggle",
@@ -164,6 +179,124 @@ class TelegramAdminBot:
                 ]
             },
         )
+
+    async def show_receipt_reports(self):
+        report = self._state().get("receipt_reports", {})
+        enabled = report.get("enabled", True)
+        chat_id = report.get("chat_id") or "не задан"
+        thread_id = report.get("thread_id") or "основной чат"
+        await self.send(
+            "📣 <b>Отчёты о зарегистрированных чеках</b>\n\n"
+            f"Отправка: <b>{self._enabled(enabled)}</b>\n"
+            f"Чат: <code>{html.escape(str(chat_id))}</code>\n"
+            f"Тема: <code>{html.escape(str(thread_id))}</code>\n\n"
+            "Бот должен быть добавлен в выбранную группу и иметь право отправлять сообщения.",
+            reply_markup={"inline_keyboard": [
+                [{
+                    "text": f"Отчёты: {'ВКЛ ✅' if enabled else 'ВЫКЛ ⛔'}",
+                    "callback_data": "report:toggle",
+                }],
+                [{"text": "📍 Использовать этот чат и тему", "callback_data": "report:here"}],
+                [{"text": "✏️ Ввести ID чата", "callback_data": "report:chat:input"}],
+                [{"text": "✏️ Ввести ID темы", "callback_data": "report:thread:input"}],
+                [{"text": "🧹 Без отдельной темы", "callback_data": "report:thread:clear"}],
+                [{"text": "⬅️ Главное меню", "callback_data": "menu:main"}],
+            ]},
+        )
+
+    async def show_queue(self):
+        state = self._state()
+        rows = []
+        for item in state.get("pending_payments", []):
+            if isinstance(item, dict):
+                rows.append([{"text": f"💳 {item.get('amount', '?')} ₽ · {item.get('status', '?')}",
+                              "callback_data": f"queue:p:{item.get('payment_id')}"}])
+        for item in state.get("pending_refunds", []):
+            rows.append([{"text": f"↩️ {item.get('refund_amount', '?')} ₽ · {item.get('status', '?')}",
+                          "callback_data": f"queue:r:{item.get('refund_id')}"}])
+        if not rows:
+            await self.send("📋 Очередь пуста.", reply_markup={"inline_keyboard": [
+                [{"text": "⬅️ Главное меню", "callback_data": "menu:main"}]
+            ]})
+            return
+        rows = rows[:20]
+        rows.append([{"text": "🔄 Обновить", "callback_data": "menu:queue"}])
+        rows.append([{"text": "⬅️ Главное меню", "callback_data": "menu:main"}])
+        await self.send("📋 <b>Очередь ФНС</b>\n\nВыберите операцию для подробностей.",
+                        reply_markup={"inline_keyboard": rows})
+
+    async def show_queue_item(self, kind, item_id):
+        state = self._state()
+        key, id_key = ("pending_payments", "payment_id") if kind == "p" else ("pending_refunds", "refund_id")
+        item = next((x for x in state.get(key, []) if isinstance(x, dict) and x.get(id_key) == item_id), None)
+        if not item:
+            await self.send("Элемент уже обработан или удалён из очереди.")
+            return
+        amount = item.get("amount") if kind == "p" else item.get("refund_amount")
+        status = item.get("status", "unknown")
+        automatic_statuses = {"ready", "cancelled"}
+        mode = "автоматический повтор" if status in automatic_statuses else "нужна ручная проверка"
+        lines = [
+            "💳 <b>Платёж</b>" if kind == "p" else "↩️ <b>Возврат</b>",
+            f"ID: <code>{html.escape(str(item_id))}</code>",
+            f"Сумма: <b>{html.escape(str(amount))} ₽</b>",
+            f"Дата: <code>{html.escape(str(item.get('created_at', '—')))}</code>",
+            f"Статус: <code>{html.escape(status)}</code>",
+            f"Режим: {mode}",
+            f"Попыток: {item.get('queue_attempts', item.get('attempts', 0))}",
+            f"Последняя попытка: <code>{html.escape(str(item.get('last_attempt_at', '—')))}</code>",
+            f"Ошибка: <code>{html.escape(str(item.get('error', '—'))[:700])}</code>",
+        ]
+        buttons = []
+        retryable = kind == "p" or status in {
+            "cancellation_unknown", "cancellation_rejected",
+            "replacement_unknown", "replacement_rejected", "creating_replacement",
+        }
+        if retryable:
+            if kind == "p":
+                label = "🔁 Я проверил: чека нет — повторить"
+            elif status.startswith("cancellation"):
+                label = "🔁 Исходный чек активен — аннулировать"
+            else:
+                label = "🔁 Чека на остаток нет — создать"
+            buttons.append([{"text": label, "callback_data": f"retry:ask:{kind}:{item_id}"}])
+        buttons.extend([
+            [{"text": "⬅️ К очереди", "callback_data": "menu:queue"}],
+            [{"text": "🏠 Главное меню", "callback_data": "menu:main"}],
+        ])
+        await self.send("\n".join(lines), reply_markup={"inline_keyboard": buttons})
+
+    async def retry_queue_item(self, kind, item_id):
+        try:
+            self.store.acquire_lock()
+            state = self._state()
+            key, id_key = ("pending_payments", "payment_id") if kind == "p" else ("pending_refunds", "refund_id")
+            item = next((x for x in state.get(key, []) if isinstance(x, dict) and x.get(id_key) == item_id), None)
+            if not item:
+                await self.send("Элемент уже отсутствует в очереди.")
+                return
+            if kind == "p":
+                if item.get("currency") != "RUB":
+                    await self.send("Повтор запрещён: валюта платежа не поддерживается.")
+                    return
+                item["status"] = "ready"
+                item["queue_attempts"] = 0
+                item.pop("last_notified_error", None)
+            elif item.get("status") in {"cancellation_unknown", "cancellation_rejected"}:
+                item["status"] = "ready"
+            elif item.get("status") in {"replacement_unknown", "replacement_rejected", "creating_replacement"}:
+                item["status"] = "cancelled"
+            else:
+                await self.send("Из этого статуса безопасный ручной повтор запрещён.")
+                return
+            item.pop("error", None)
+            self.store.save(state)
+        except ConcurrentRunError:
+            await self.send("Синхронизация сейчас выполняется. Повторите через минуту.")
+            return
+        finally:
+            self.store.release_lock()
+        await self.send("✅ Операция возвращена в очередь с безопасной фазы.")
 
     async def show_backups_menu(self):
         await self.send(
@@ -198,6 +331,7 @@ class TelegramAdminBot:
     async def command_status(self):
         state = self._state()
         prefs = state.get("notification_preferences", {})
+        report = state.get("receipt_reports", {})
         pending_payments = state.get("pending_payments", [])
         pending_refunds = state.get("pending_refunds", [])
         ready = sum(
@@ -226,8 +360,8 @@ class TelegramAdminBot:
             f"Возвратов в обработке: <b>{len(pending_refunds)}</b>\n"
             f"Лимит повторов: <b>{limit_text}</b>\n\n"
             f"Резервные копии: <b>{html.escape(backup_text)}</b>\n\n"
-            "Успешные чеки: "
-            f"<b>{self._enabled(prefs.get('receipt_success', True))}</b>\n"
+            "Отчёты об успешных чеках: "
+            f"<b>{self._enabled(report.get('enabled', True))}</b>\n"
             "Ошибки регистрации: "
             f"<b>{self._enabled(prefs.get('receipt_errors', True))}</b>",
             reply_markup={
@@ -294,10 +428,10 @@ class TelegramAdminBot:
         if not parts:
             await self.show_notifications()
             return
-        if len(parts) != 2 or parts[0] not in ("receipts", "errors") or parts[1] not in ("on", "off"):
+        if len(parts) != 2 or parts[0] != "errors" or parts[1] not in ("on", "off"):
             await self.send("Некорректная команда. Используйте <code>/notifications</code> для справки.")
             return
-        key = "receipt_success" if parts[0] == "receipts" else "receipt_errors"
+        key = "receipt_errors"
         value = parts[1] == "on"
         try:
             self.store.acquire_lock()
@@ -316,7 +450,7 @@ class TelegramAdminBot:
         chat_id = str((message.get("chat") or {}).get("id", ""))
         user_id = str((callback.get("from") or {}).get("id", ""))
         callback_id = callback.get("id")
-        if chat_id != self.admin_chat_id or user_id != self.admin_user_id:
+        if user_id != self.admin_user_id:
             logging.warning(
                 "Отклонено неразрешённое нажатие Telegram: chat=%s user=%s",
                 chat_id,
@@ -331,6 +465,9 @@ class TelegramAdminBot:
                 )
             return
 
+        self._reply_chat_id = chat_id
+        self._reply_thread_id = message.get("message_thread_id")
+
         if callback_id:
             await self._api("answerCallbackQuery", callback_query_id=callback_id)
         action = callback.get("data") or ""
@@ -338,6 +475,10 @@ class TelegramAdminBot:
             await self.show_main_menu()
         elif action == "menu:notifications":
             await self.show_notifications()
+        elif action == "menu:reports":
+            await self.show_receipt_reports()
+        elif action == "menu:queue":
+            await self.show_queue()
         elif action == "menu:backups":
             await self.show_backups_menu()
         elif action == "menu:logs":
@@ -365,15 +506,62 @@ class TelegramAdminBot:
             await self.command_logs(f"{source} {count}")
         elif action.startswith("notify:"):
             _, kind, operation = action.split(":", 2)
-            if operation != "toggle" or kind not in ("receipts", "errors"):
+            if operation != "toggle" or kind != "errors":
                 await self.send("Неизвестное действие кнопки.")
                 return
             preferences = self._state().get("notification_preferences", {})
-            key = "receipt_success" if kind == "receipts" else "receipt_errors"
+            key = "receipt_errors"
             new_value = not preferences.get(key, True)
             await self.command_notifications(
                 f"{kind} {'on' if new_value else 'off'}"
             )
+        elif action == "report:toggle":
+            if await self.update_receipt_report(toggle=True):
+                await self.show_receipt_reports()
+        elif action == "report:here":
+            if await self.update_receipt_report(
+                chat_id=chat_id, thread_id=message.get("message_thread_id")
+            ):
+                await self.show_receipt_reports()
+        elif action == "report:chat:input":
+            self.pending_input = "report_chat_id"
+            await self.send("Отправьте числовой ID группы, например <code>-1001234567890</code>.")
+        elif action == "report:thread:input":
+            self.pending_input = "report_thread_id"
+            await self.send("Отправьте числовой ID темы. Его можно получить кнопкой «Использовать этот чат и тему» внутри нужной темы.")
+        elif action == "report:thread:clear":
+            if await self.update_receipt_report(thread_id=None):
+                await self.show_receipt_reports()
+        elif action.startswith("queue:"):
+            _, kind, item_id = action.split(":", 2)
+            await self.show_queue_item(kind, item_id)
+        elif action.startswith("retry:ask:"):
+            _, _, kind, item_id = action.split(":", 3)
+            state = self._state()
+            key, id_key = ("pending_payments", "payment_id") if kind == "p" else ("pending_refunds", "refund_id")
+            item = next((x for x in state.get(key, []) if isinstance(x, dict) and x.get(id_key) == item_id), {})
+            status = item.get("status", "")
+            if kind == "p":
+                check_text = "Вы проверили «Мой Налог» и убедились, что чек платежа не был создан?"
+                confirm_text = "✅ Да, чека нет"
+            elif status.startswith("cancellation"):
+                check_text = "Вы проверили «Мой Налог» и убедились, что исходный чек всё ещё активен?"
+                confirm_text = "✅ Да, чек активен"
+            else:
+                check_text = "Вы проверили «Мой Налог» и убедились, что чек на остаток не был создан?"
+                confirm_text = "✅ Да, чека нет"
+            await self.send(
+                "⚠️ <b>Подтвердите ручную сверку</b>\n\n"
+                f"{check_text} "
+                "Ошибочное подтверждение может привести к дубликату.",
+                reply_markup={"inline_keyboard": [[
+                    {"text": confirm_text, "callback_data": f"retry:confirm:{kind}:{item_id}"},
+                    {"text": "Отмена", "callback_data": f"queue:{kind}:{item_id}"},
+                ]]},
+            )
+        elif action.startswith("retry:confirm:"):
+            _, _, kind, item_id = action.split(":", 3)
+            await self.retry_queue_item(kind, item_id)
         else:
             await self.send("Эта кнопка устарела. Откройте главное меню заново.")
 
@@ -385,17 +573,36 @@ class TelegramAdminBot:
         message = update.get("message") or {}
         chat_id = str((message.get("chat") or {}).get("id", ""))
         user_id = str((message.get("from") or {}).get("id", ""))
-        if chat_id != self.admin_chat_id or user_id != self.admin_user_id:
+        if user_id != self.admin_user_id:
             logging.warning(
                 "Отклонена неразрешённая команда Telegram: chat=%s user=%s",
                 chat_id,
                 user_id,
             )
             return
+        self._reply_chat_id = chat_id
+        self._reply_thread_id = message.get("message_thread_id")
         text = (message.get("text") or "").strip()
+        if getattr(self, "pending_input", None):
+            try:
+                value = int(text)
+            except ValueError:
+                await self.send("Нужен числовой ID. Для отмены нажмите /start.")
+                return
+            key = "chat_id" if self.pending_input == "report_chat_id" else "thread_id"
+            saved = await self.update_receipt_report(
+                **{key: str(value) if key == "chat_id" else value}
+            )
+            if not saved:
+                return
+            self.pending_input = None
+            await self.show_receipt_reports()
+            return
         button_actions = {
             "📊 Статус": self.command_status,
+            "📋 Очередь": self.show_queue,
             "🔔 Уведомления": self.show_notifications,
+            "📣 Отчёты о чеках": self.show_receipt_reports,
             "💾 Резервные копии": self.show_backups_menu,
             "📄 Логи": self.show_logs_menu,
             "ℹ️ Помощь": self.show_main_menu,

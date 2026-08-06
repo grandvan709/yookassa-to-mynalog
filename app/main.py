@@ -63,6 +63,24 @@ class SyncManager:
         else:
             self.notifier = None
 
+        report = self.state.get("receipt_reports", {})
+        report_chat_id = report.get("chat_id")
+        report_thread_id = report.get("thread_id")
+        if config.TELEGRAM_BOT_TOKEN and report_chat_id:
+            try:
+                report_thread_id = int(report_thread_id) if report_thread_id else None
+            except (TypeError, ValueError):
+                logging.warning("Некорректный ID темы отчётов; используется основной чат.")
+                report_thread_id = None
+            self.receipt_notifier = TelegramNotifier(
+                bot_token=config.TELEGRAM_BOT_TOKEN,
+                chat_id=str(report_chat_id),
+                thread_id=report_thread_id,
+                proxy=config.TELEGRAM_PROXY,
+            )
+        else:
+            self.receipt_notifier = None
+
         if config.SMTP_HOST and config.SMTP_USER and config.SMTP_PASSWORD and config.SMTP_TO_EMAIL:
             self.email_notifier = EmailNotifier(
                 host=config.SMTP_HOST,
@@ -78,23 +96,29 @@ class SyncManager:
         else:
             self.email_notifier = None
 
-        self.event_notifiers = [n for n in (self.notifier, self.email_notifier) if n]
+        self.event_notifiers = [
+            n for n in (self.notifier, self.receipt_notifier, self.email_notifier) if n
+        ]
 
     def _emit(self, method, *args):
+        success_methods = {
+            "on_payment_success", "on_payment_verified",
+            "on_refund_cancelled", "on_refund_adjusted",
+        }
         for n in self.event_notifiers:
-            if n is self.notifier and not self._telegram_event_enabled(method):
-                continue
+            if n is self.notifier:
+                if method in success_methods or not self._telegram_event_enabled(method):
+                    continue
+            if n is getattr(self, "receipt_notifier", None):
+                report = self.state.get("receipt_reports", {})
+                if method not in success_methods and method != "on_sync_start":
+                    continue
+                if method in success_methods and not report.get("enabled", True):
+                    continue
             getattr(n, method)(*args)
 
     def _telegram_event_enabled(self, method):
         preferences = self.state.get("notification_preferences", {})
-        if method in {
-            "on_payment_success",
-            "on_payment_verified",
-            "on_refund_cancelled",
-            "on_refund_adjusted",
-        }:
-            return preferences.get("receipt_success", True)
         if method in {
             "on_payment_error",
             "on_refund_error",
@@ -127,6 +151,15 @@ class SyncManager:
                 "receipt_success": True,
                 "receipt_errors": True,
             },
+            "receipt_reports": {
+                "enabled": state.get("notification_preferences", {}).get(
+                    "receipt_success", True
+                ),
+                "chat_id": config.TELEGRAM_RECEIPT_REPORT_CHAT_ID
+                or config.TELEGRAM_CHAT_ID,
+                "thread_id": config.TELEGRAM_RECEIPT_REPORT_THREAD_ID
+                or config.TELEGRAM_THREAD_ID,
+            },
         }
         for key, default in defaults.items():
             if key not in state:
@@ -155,6 +188,13 @@ class SyncManager:
             "notification_preferences": {
                 "receipt_success": True,
                 "receipt_errors": True,
+            },
+            "receipt_reports": {
+                "enabled": True,
+                "chat_id": config.TELEGRAM_RECEIPT_REPORT_CHAT_ID
+                or config.TELEGRAM_CHAT_ID,
+                "thread_id": config.TELEGRAM_RECEIPT_REPORT_THREAD_ID
+                or config.TELEGRAM_THREAD_ID,
             },
         }
         self.state_store.save(base)
@@ -237,6 +277,8 @@ class SyncManager:
         return new_payments, None
 
     async def get_new_refunds(self):
+        if not config.REFUNDS_ENABLED:
+            return [], None
         new_refunds = []
         last_refund_sync = self.state.get("last_refund_sync_time") or self.state.get("last_sync_time")
         processed_ids = set(self.state["processed_refunds"])
@@ -495,6 +537,8 @@ class SyncManager:
             await self.nalog.close()
             if self.notifier:
                 await self.notifier.send_summary()
+            if getattr(self, "receipt_notifier", None):
+                await self.receipt_notifier.send_summary()
             if self.email_notifier:
                 await self.email_notifier.send_summary()
 
@@ -531,6 +575,40 @@ class SyncManager:
         payment_date = datetime.fromisoformat(
             adjustment["payment_created_at"].replace('Z', '+00:00')
         )
+
+        if status == "cancellation_unknown":
+            income_status = await self.nalog.get_income_status(
+                adjustment["receipt_uuid"], payment_date
+            )
+            adjustment["last_verification_at"] = datetime.now(timezone.utc).isoformat()
+            if income_status == "cancelled":
+                adjustment["status"] = "cancelled"
+                adjustment.pop("error", None)
+                self.save_state()
+                status = "cancelled"
+            elif income_status == "active":
+                adjustment["status"] = "ready"
+                adjustment["error"] = "исходный чек активен; аннулирование будет повторено"
+                self.save_state()
+                return "manual"
+            else:
+                adjustment["error"] = self.nalog.last_error or "исходный чек не найден при сверке"
+                self.save_state()
+                return "manual"
+
+        if status == "replacement_unknown":
+            receipt_uuid = await self.nalog.find_income(
+                adjustment["replacement_description"], remaining_amount, payment_date
+            )
+            adjustment["last_verification_at"] = datetime.now(timezone.utc).isoformat()
+            if receipt_uuid:
+                self._complete_refund_adjustment(adjustment, receipt_uuid)
+                return "adjusted"
+            adjustment["error"] = self.nalog.last_error or (
+                "чек на остаток не найден; повторная запись заблокирована до сверки"
+            )
+            self.save_state()
+            return "manual"
 
         if status == "ready":
             adjustment["status"] = "cancelling"
@@ -682,6 +760,8 @@ class SyncManager:
 
     async def _resume_pending_refunds(self):
         results = {"adjusted": 0, "cancelled": 0, "manual": 0}
+        if not config.REFUNDS_ENABLED:
+            return results
         for adjustment in list(self.state.get("pending_refunds", [])):
             try:
                 result = await self._resume_refund_adjustment(adjustment)
@@ -980,6 +1060,8 @@ class SyncManager:
             await self.nalog.close()
             if self.notifier:
                 await self.notifier.send_summary()
+            if getattr(self, "receipt_notifier", None):
+                await self.receipt_notifier.send_summary()
             if self.email_notifier:
                 await self.email_notifier.send_summary()
             logging.info("Синхронизация завершена.")
