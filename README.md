@@ -592,10 +592,6 @@ docker compose up -d --build && docker compose logs -f -t
 
 > **Ставь ⭐** и не пропусти регулярные обновления для поддержания актуальности скрипта и оптимальной автоматизации
 
-> USDT TRC20: TL6gHETnKqNWV4D6GjiKKahkBsAwcyWfo8 | [ЮKassa (руб.)](https://yookassa.ru/my/i/aZUoMtbfNgP8/l)
+> USDT TON: `UQC8HHh2VUcRX7KJ5v8TSmZiqJR3bSqBzH3y_G9u84ELF66A`
 
-<p align=center>
-    <a href="https://t.me/grand_van" target="_blank" rel="noopener noreferrer">
-        <img src="https://img.shields.io/badge/Telegram-GrandVan-purple?logo=telegram&logoColor=white&labelColor=blue" alt="Chat me on Telegram">
-    </a>
-</p>
+Изначальный автор проекта: [GrandVan](https://t.me/grand_van).
