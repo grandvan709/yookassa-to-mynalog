@@ -1,18 +1,27 @@
-FROM python:3.13-slim
+FROM python:3.13-slim-bookworm
+
+ARG APP_UID=1000
+ARG APP_GID=1000
 
 WORKDIR /app
 
-RUN echo "deb http://deb.debian.org/debian bookworm main" > /etc/apt/sources.list && \
-    echo "deb http://deb.debian.org/debian bookworm-updates main" >> /etc/apt/sources.list && \
-    echo "deb http://security.debian.org/debian-security bookworm-security main" >> /etc/apt/sources.list
-RUN apt-get update && apt-get install -y cron && rm -rf /var/lib/apt/lists/*
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-RUN mkdir -p /app/logs && chmod 0777 /app/logs
+RUN test "$APP_UID" -gt 0 && test "$APP_GID" -gt 0 && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends cron tzdata util-linux && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd --gid "$APP_GID" app && \
+    useradd --uid "$APP_UID" --gid "$APP_GID" --home-dir /app --no-create-home --shell /usr/sbin/nologin app && \
+    mkdir -p /app/data /app/logs && \
+    chown app:app /app/data /app/logs
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app/ .
+COPY --chown=app:app app/ .
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 

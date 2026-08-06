@@ -2,13 +2,35 @@ services:
   yookassa-to-mynalog:
     container_name: yookassa-to-mynalog
     hostname: yookassa-to-mynalog
-    image: grandvan/yookassa-to-mynalog:latest
-    restart: always
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
     volumes:
-      - ./.env:/app/.env
-      - ./logs:/app/logs
-    dns:
-      - 77.88.8.8
-      - 77.88.8.1
+      - type: bind
+        source: ./data
+        target: /app/data
+      - type: bind
+        source: ./logs
+        target: /app/logs
     environment:
-      - PYTHONUNBUFFERED=1
+      PYTHONUNBUFFERED: "1"
+      DATA_DIR: /app/data
+      LOG_DIR: /app/logs
+    healthcheck:
+      test: ["CMD", "runuser", "-u", "app", "--", "python", "/app/healthcheck.py"]
+      interval: 1m
+      timeout: 15s
+      retries: 3
+      start_period: 5m
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"

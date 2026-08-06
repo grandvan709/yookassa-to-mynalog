@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+from logging.handlers import RotatingFileHandler
 
 ANSI = {
     "reset": "\033[0m",
@@ -70,7 +71,12 @@ def setup_logging(log_dir: str):
     stream_handler.setFormatter(ColorFormatter(use_color=use_color()))
     root.addHandler(stream_handler)
 
-    file_handler = logging.FileHandler(f"{log_dir}/sync.log", encoding="utf-8")
+    file_handler = RotatingFileHandler(
+        f"{log_dir}/sync.log",
+        maxBytes=10 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
     file_handler.setFormatter(ColorFormatter(use_color=False))
     root.addHandler(file_handler)
 

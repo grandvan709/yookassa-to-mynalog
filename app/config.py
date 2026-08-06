@@ -7,7 +7,8 @@ load_dotenv()
 TZ = os.getenv("TZ")
 if TZ:
     os.environ["TZ"] = TZ
-    time.tzset()
+    if hasattr(time, "tzset"):
+        time.tzset()
 
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
 YOOKASSA_API_KEY = os.getenv("YOOKASSA_API_KEY")
@@ -25,6 +26,19 @@ DEVICE_ID = os.getenv("DEVICE_ID")
 SYNC_START_DATE = os.getenv("SYNC_START_DATE")
 INCOME_DESCRIPTION_TEMPLATE = os.getenv("INCOME_DESCRIPTION_TEMPLATE", "Платеж #{description}")
 CRON_SCHEDULE = os.getenv("CRON_SCHEDULE", "0 */4 * * *")
+FNS_RETRY_SCHEDULE = os.getenv("FNS_RETRY_SCHEDULE", "*/5 * * * *")
+FNS_RETRY_DELAY_SECONDS = float(os.getenv("FNS_RETRY_DELAY_SECONDS", "3"))
+STATE_RETENTION_DAYS = int(os.getenv("STATE_RETENTION_DAYS", "1095"))
+HEALTH_MAX_AGE_HOURS = float(os.getenv("HEALTH_MAX_AGE_HOURS", "25"))
+
+BACKUP_TARGET = os.getenv("BACKUP_TARGET", "").strip().lower()
+BACKUP_SCHEDULE = os.getenv("BACKUP_SCHEDULE", "0 3 * * *")
+BACKUP_PASSWORD = os.getenv("BACKUP_PASSWORD", "")
+BACKUP_RETENTION_COUNT = int(os.getenv("BACKUP_RETENTION_COUNT", "7"))
+BACKUP_MAX_MB = float(os.getenv("BACKUP_MAX_MB", "45"))
+BACKUP_HEALTH_MAX_AGE_HOURS = float(
+    os.getenv("BACKUP_HEALTH_MAX_AGE_HOURS", "48")
+)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -43,6 +57,19 @@ EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT", "Синхронизация чеко�
 
 
 def validate_config():
+    if FNS_RETRY_DELAY_SECONDS < 0:
+        raise ValueError("FNS_RETRY_DELAY_SECONDS не может быть отрицательным.")
+    if STATE_RETENTION_DAYS < 1:
+        raise ValueError("STATE_RETENTION_DAYS должен быть положительным числом.")
+    if HEALTH_MAX_AGE_HOURS <= 0:
+        raise ValueError("HEALTH_MAX_AGE_HOURS должен быть положительным числом.")
+    if BACKUP_TARGET not in ("", "telegram", "email"):
+        raise ValueError("BACKUP_TARGET должен быть пустым, telegram или email.")
+    if BACKUP_RETENTION_COUNT < 1 or BACKUP_MAX_MB <= 0:
+        raise ValueError("Параметры хранения и размера backup должны быть положительными.")
+    if BACKUP_TARGET and len(BACKUP_PASSWORD) < 12:
+        raise ValueError("Для backup задайте BACKUP_PASSWORD длиной не менее 12 символов.")
+
     if MOY_NALOG_AUTH_METHOD not in ("password", "refresh"):
         raise ValueError(f"MOY_NALOG_AUTH_METHOD имеет недопустимое значение: '{MOY_NALOG_AUTH_METHOD}' (допустимо: password, refresh)")
 
@@ -68,6 +95,10 @@ def validate_config():
         raise ValueError("TELEGRAM_BOT_TOKEN задан, но TELEGRAM_CHAT_ID отсутствует.")
     if TELEGRAM_CHAT_ID and not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_CHAT_ID задан, но TELEGRAM_BOT_TOKEN отсутствует.")
+    if BACKUP_TARGET == "telegram" and not (
+        TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
+    ):
+        raise ValueError("Для BACKUP_TARGET=telegram настройте Telegram bot token и chat ID.")
 
     smtp_partial = [
         ("SMTP_HOST", SMTP_HOST),
@@ -79,5 +110,7 @@ def validate_config():
     smtp_missing = [name for name, val in smtp_partial if not val]
     if smtp_set and smtp_missing:
         raise ValueError(f"Email-уведомления настроены частично. Отсутствуют: {', '.join(smtp_missing)}")
+    if BACKUP_TARGET == "email" and smtp_missing:
+        raise ValueError(f"Для BACKUP_TARGET=email отсутствуют: {', '.join(smtp_missing)}")
 
     return True

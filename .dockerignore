@@ -1,36 +1,12 @@
-# Python dirs
-__pycache__/
-.venv/
-*.pyc
-
-# Logs
-logs/sync.log
-logs/sync_state.json
-
-# ENV files
-.env
-.env.example
-
-# Docker files
-.dockerignore
-Dockerfile
-docker-compose.yml
-
-# Git
-.github/
-.git/
+.git
 .gitignore
-.gitattributes
-
-# Documentation
-*.md
-LICENSE
-docs/
-
-# IDE
-.vscode
-.idea
-*.swp
-
-# AI
-.claude/
+.env
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+data
+logs
+tests
+scripts
+README.md

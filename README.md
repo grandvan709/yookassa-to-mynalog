@@ -23,7 +23,7 @@
 
 ## 📋 Требования
 
-- Docker
+- Linux (Debian/Ubuntu) для автоматической установки либо уже установленный Docker
 - Учетные данные ЮKassa (Shop ID + API ключ)
 - Учетные данные Мой Налог (логин + пароль **или** refresh token при входе через Госуслуги)
 
@@ -31,26 +31,22 @@
 
 ## 🔧 Установка
 
-### 1. Устанавливаем Docker
+Клонируйте репозиторий и запустите установщик:
+
 ```bash
-sudo curl -fsSL https://get.docker.com | sh
+git clone https://github.com/zavul0nn/yookassa-to-mynalog.git
+cd yookassa-to-mynalog
+bash install.sh
 ```
 
-### 2. Создаем папку `/opt/yookassa-to-mynalog` и переходим в нее (а так же создадим папку `logs` внутри)
-```bash
-sudo mkdir -p /opt/yookassa-to-mynalog/logs && cd /opt/yookassa-to-mynalog
-```
+Если Docker отсутствует, на Debian/Ubuntu установщик подключит официальный
+репозиторий Docker и установит Engine с Compose. При первом запуске он создаст
+`.env` и остановится — заполните реквизиты и повторите `bash install.sh`.
+Каталоги `data/` и `logs/`, UID/GID и права создаются автоматически.
 
-### 3. Скачиваем файлы `.env.example` (его сразу ренеймим в `.env`) и `docker-compose.yml`
-```bash
-sudo wget -O .env https://raw.githubusercontent.com/grandvan709/yookassa-to-mynalog/refs/heads/master/.env.example && \
-sudo wget -O docker-compose.yml https://raw.githubusercontent.com/grandvan709/yookassa-to-mynalog/refs/heads/master/docker-compose.yml
-```
-
-### 4. Заполняем файл `.env` необходимыми значениями (см раздел "Конфигурация")
-```bash
-sudo nano .env
-```
+Опция `--add-docker-group` добавляет текущего пользователя в группу `docker`,
+чтобы работать без `sudo`. Учитывайте, что членство в этой группе фактически
+даёт root-доступ к хосту. Без этой опции установщик сам использует `sudo`.
 
 ## ⚙️ Конфигурация
 
@@ -135,6 +131,10 @@ sudo nano .env
 | `SYNC_START_DATE` | -24ч | Дата начала синхронизации (YYYY-MM-DD) |
 | `INCOME_DESCRIPTION_TEMPLATE` | `Платеж #{description}` | Шаблон описания дохода (см. ниже) |
 | `CRON_SCHEDULE` | `0 */4 * * *` | Расписание cron (каждые 4 часа) |
+| `FNS_RETRY_SCHEDULE` | `*/5 * * * *` | Отдельное расписание обработки сохранённой очереди ФНС без опроса ЮKassa |
+| `FNS_RETRY_DELAY_SECONDS` | `3` | Пауза между чеками очереди, чтобы не перегружать API ФНС |
+| `STATE_RETENTION_DAYS` | `1095` | Срок хранения истории операций; очистка выполняется только позади checkpoint |
+| `HEALTH_MAX_AGE_HOURS` | `25` | Допустимый возраст последней успешной синхронизации для healthcheck |
 | `NO_COLOR` | — | Установите `1`, чтобы отключить ANSI-цвета в логах |
 | `YOOKASSA_NALOG_PROXY` | — | SOCKS5 прокси для ЮKassa и ФНС (для серверов вне РФ). Формат: `socks5h://user:pass@host:1080` |
 
@@ -202,27 +202,151 @@ CRON_SCHEDULE='0 0 * * 0'        # один раз в неделю в воскр
 
 **Формат cron:** `минуты часы дни_месяца месяцы дни_недели`
 
+### Очередь при недоступности ФНС
+
+Незавершённые операции хранятся в SQLite на хосте и не удаляются после
+фиксированного числа попыток. Отдельный cron каждые 5 минут запускает
+`python app/main.py --retry-fns-only`; этот режим не получает список платежей
+из ЮKassa.
+
+- Если запрос на создание чека заведомо не был отправлен, операция остаётся
+  в статусе `ready` и безопасно повторяется.
+- Если POST мог дойти до ФНС, операция получает статус `unknown`. Скрипт только
+  ищет уже созданный чек и не делает слепой повтор POST.
+- Чек считается найденным по точным описанию и сумме. В описание автоматически
+  добавляется уникальный ID платежа YooKassa, поэтому одинаковые суммы и время
+  не приводят к ложному совпадению. Поиск просматривает все страницы чеков за
+  заданный период, а не только первые 50–100 записей.
+- При очередном сбое ФНС обработка пачки прекращается до следующего цикла, чтобы
+  не отправлять десятки одинаково обречённых запросов.
+
 ## 🚀 Запуск
+
+### Безопасная проверка интеграции
+
+Проверить доступ к ЮKassa только GET-запросами, без вывода данных платежей:
+
+```bash
+python scripts/yookassa_readonly_check.py --allow-live
+```
+
+Проверить алгоритм частичного возврата на одном реальном платеже, используя
+только чтение ЮKassa и полностью локальный симулятор «Моего налога»:
+
+```bash
+python scripts/simulate_mynalog_with_yookassa.py --allow-live-readonly
+```
+
+Скрипт не создаёт платежи или возвраты в ЮKassa и не обращается к ФНС.
+
+### Эмуляция недоступности ФНС
+
+```bash
+python scripts/simulate_nalog_outages.py
+```
+
+Скрипт не обращается к `lknpd.nalog.ru`. Он проверяет connect timeout,
+DNS/connection error, отсутствие ответа после POST, HTTP 503, HTTP 429,
+HTML-страницу техработ с кодом 200 и постоянную ошибку HTTP 400.
+
+Ошибки делятся на три безопасные группы:
+
+- если запрос точно не был отправлен или явно отклонён до обработки
+  (авторизация, connect timeout, 429),
+  операция остаётся в `ready` и повторяется при следующей синхронизации;
+- если POST мог быть обработан, но ответ потерян (read timeout, обрыв соединения,
+  5xx или некорректный ответ), создание не повторяется — выполняется поиск чека,
+  затем операция остаётся для ручной сверки;
+- постоянные 4xx-ошибки переводятся в `rejected` и не создают бесконечный цикл.
 
 ### Первый запуск
 ```bash
-cd /opt/yookassa-to-mynalog && sudo docker compose up -d
+docker compose up -d --build
 ```
+
+Compose всегда собирает образ приложения из локального `Dockerfile`; образ
+приложения из Docker Hub не скачивается. Базовый `python:3.13-slim-bookworm`
+будет загружен один раз, если его ещё нет в локальном кеше Docker.
 
 ### Проверка логов
 ```bash
-cd /opt/yookassa-to-mynalog && sudo docker compose logs -f -t
+docker compose logs -f -t
 ```
 
 ### Остановка
 ```bash
-cd /opt/yookassa-to-mynalog && sudo docker compose down
+docker compose down
 ```
 
 ### Перезагрузка
 ```bash
-cd /opt/yookassa-to-mynalog && sudo docker compose down && sudo docker compose up -d
+docker compose restart
 ```
+
+База находится на хосте в `data/sync_state.db`, а файловые логи — в
+`logs/sync.log` (с ротацией до пяти файлов по 10 МБ). Контейнер монтирует эти
+каталоги и не хранит в своём слое данные, необходимые для резервной копии.
+
+### Резервные копии в Telegram или на почту
+
+Backup отключён по умолчанию. Для Telegram добавьте в `.env`:
+
+```env
+BACKUP_TARGET='telegram'
+BACKUP_SCHEDULE='0 3 * * *'
+BACKUP_PASSWORD='длинный-уникальный-пароль-не-из-чата'
+BACKUP_INCLUDE_LOGS='true'
+TELEGRAM_BOT_TOKEN='...'
+TELEGRAM_CHAT_ID='...'
+```
+
+Для отправки на почту замените `BACKUP_TARGET='telegram'` на
+`BACKUP_TARGET='email'` и заполните переменные `SMTP_*`. После изменения:
+
+```bash
+docker compose up -d --build
+```
+
+При запуске контейнер сразу создаёт первую копию, затем делает их по
+`BACKUP_SCHEDULE`. Используется согласованный SQLite snapshot, а архив до
+отправки шифруется AES-256-GCM. Локальные зашифрованные копии находятся в
+`data/backups/`; по умолчанию сохраняются последние семь. В архив входят база,
+manifest и ротированные логи. Пароль шифрования необходимо хранить отдельно:
+без него восстановление невозможно.
+
+Дополнительные настройки: `BACKUP_RETENTION_COUNT=7`, `BACKUP_MAX_MB=45` и
+`BACKUP_HEALTH_MAX_AGE_HOURS=48`. Для Telegram предел оставляйте ниже 50 МБ.
+
+Проверка ручного запуска:
+
+```bash
+docker compose exec yookassa-to-mynalog python /app/backup.py run
+```
+
+Восстановление всегда выполняется в новый каталог и не перезаписывает рабочую
+базу:
+
+```bash
+docker compose exec yookassa-to-mynalog \
+  python /app/backup.py restore /app/data/backups/ИМЯ.ynbackup \
+  --output /app/data/restore-check
+```
+
+Остановите контейнер, проверьте восстановленную базу и только затем вручную
+заменяйте `data/sync_state.db`.
+
+### Проверка состояния контейнера
+
+```bash
+docker compose ps
+docker inspect --format='{{json .State.Health}}' yookassa-to-mynalog
+docker compose exec yookassa-to-mynalog python /app/healthcheck.py
+```
+
+Healthcheck проверяет процесс cron, права на `data/` и `logs/`, свежесть
+успешной синхронизации, `PRAGMA quick_check` базы и, если backup включён,
+свежесть последней успешно отправленной копии. Статусы сохраняются на хосте в
+`data/health.json` и `data/backup_status.json`.
 
 ---
 
@@ -253,9 +377,63 @@ cd /opt/yookassa-to-mynalog && sudo docker compose down && sudo docker compose u
 2026-04-01 11:00:07  INFO   Синхронизация завершена.
 ```
 
+### Защита от дублирования платежей
+
+Перед созданием чека платёж сохраняется в SQLite со статусом `ready`, затем —
+`creating`. В описание чека автоматически добавляется ID платежа ЮKassa, если
+его нет в настроенном шаблоне. При неопределённом ответе ФНС сервис ищет чек по
+уникальному описанию, точной сумме и дате и не повторяет создание вслепую.
+
+Платежи, результат которых нельзя подтвердить, доступны через CLI:
+
+```bash
+docker compose exec yookassa-to-mynalog python /app/state_cli.py list-pending-payments
+docker compose exec yookassa-to-mynalog python /app/state_cli.py retry-payment PAYMENT_ID
+docker compose exec yookassa-to-mynalog python /app/state_cli.py resolve-payment PAYMENT_ID --receipt RECEIPT_UUID
+```
+
+`retry-payment` используйте только после ручной проверки, что чек не был
+создан. Денежные значения внутри сервиса обрабатываются через `Decimal`, а
+платежи не в RUB автоматически не отправляются в «Мой налог».
+
 ### Обработка возвратов
 
 При каждой синхронизации, помимо новых платежей, проверяются возвраты в ЮKassa. Если платёж был ранее зарегистрирован как доход — соответствующий чек в "Мой Налог" автоматически аннулируется с причиной "Возврат средств".
+
+Полные и частичные возвраты обрабатываются автоматически. При частичном
+возврате текущий чек аннулируется и сразу создаётся новый чек на оставшуюся
+сумму с датой исходного платежа. Для нескольких последовательных возвратов
+сервис хранит текущий остаток платежа в SQLite.
+
+Каждый переход (`ready` → `cancelling` → `cancelled` →
+`creating_replacement`) сохраняется до обращения к следующему API. Если процесс
+прервался после отправки запроса и результат нельзя однозначно подтвердить,
+операция не повторяется вслепую и остаётся в `pending_refunds` для ручной
+сверки. Управлять такими операциями можно командами:
+
+```bash
+docker compose exec yookassa-to-mynalog python /app/state_cli.py list-pending-refunds
+docker compose exec yookassa-to-mynalog python /app/state_cli.py retry-refund REFUND_ID
+docker compose exec yookassa-to-mynalog python /app/state_cli.py resolve-refund REFUND_ID --replacement-receipt RECEIPT_UUID
+```
+
+`retry-refund` используйте только после проверки, что исходный чек не был
+аннулирован. `resolve-refund` фиксирует UUID нового чека, созданного вручную.
+Для полного возврата с нулевым остатком параметр `--replacement-receipt` не
+указывается.
+
+Состояние хранится транзакционно в `data/sync_state.db`. При первом запуске
+существующий `logs/sync_state.json` автоматически импортируется в SQLite и
+остаётся на диске как резервная копия. Повреждённый JSON не сбрасывается:
+сервис остановится с ошибкой, чтобы не создать повторные чеки.
+
+Если база уже была создана прежней версией в `logs/sync_state.db`, entrypoint
+однократно скопирует её (включая WAL-файлы) в `data/`, сохранив оригинал как
+резервную копию.
+
+История новых операций хранится `STATE_RETENTION_DAYS` дней. Запись удаляется
+только после того, как её дата оказалась позади соответствующего checkpoint;
+legacy-записи без даты автоматически не удаляются.
 
 > **Важно:** аннулирование работает только для платежей, зарегистрированных **после обновления** до версии с поддержкой возвратов. Для более ранних платежей чеки при возврате нужно аннулировать вручную в ЛК налоговой.
 
@@ -273,20 +451,21 @@ cd /opt/yookassa-to-mynalog
 sudo docker compose down
 ```
 
-### 3. Скачиваем новый образ
+### 3. Получаем изменения исходного кода
 ```bash
-sudo docker compose pull
+git pull --ff-only
 ```
 
-### 4. Запускаем контейнер и смотрим логи после запуска новой версии
+### 4. Пересобираем контейнер локально и смотрим логи
 ```bash
-sudo docker compose up -d && sudo docker compose logs -f -t
+docker compose up -d --build && docker compose logs -f -t
 ```
 
 ### 5. Проверка docker-compose.yml и прочих файлов
 Перед обновлениями и запусками - убедитесь, что ваши файлы **docker-compose.yml** и **.env** *(и прочие, которые могут быть в будущем)* соответствуют последним версиям из репозитория!
 
-> Чтобы не писать `sudo` перед каждой командой `docker` - нужно внести пользователя, из под которого вы работаете, в группу **docker** следующей командой: `sudo usermod -aG docker <username>`. А затем перезайти на сервер.
+> Для работы без `sudo` можно один раз выполнить `bash install.sh --add-docker-group`
+> и затем перезайти в систему. Группа `docker` предоставляет root-уровень доступа.
 ---
 
 > **Ставь ⭐** и не пропусти регулярные обновления для поддержания актуальности скрипта и оптимальной автоматизации

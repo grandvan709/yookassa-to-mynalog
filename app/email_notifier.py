@@ -3,6 +3,7 @@ import html as html_lib
 import smtplib
 import logging
 from datetime import datetime
+from decimal import Decimal
 from collections import defaultdict
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -37,15 +38,17 @@ class EmailNotifier:
         self.use_tls = use_tls
         self.subject = subject
 
-        self._payments: list[float] = []
+        self._payments: list[Decimal] = []
         self._errors: list[tuple[str, str]] = []
         self._start_time: datetime | None = None
         self._found_count: int = 0
         self._cancelled: int = 0
+        self._adjusted: int = 0
         self._cancel_errors: int = 0
         self._verified: int = 0
         self._pending_count: int = 0
         self._refund_skipped: int = 0
+        self._pending_refund_count: int = 0
         self._yookassa_errors: list[str] = []
         self._update_available: str | None = None
 
@@ -55,6 +58,7 @@ class EmailNotifier:
         self._payments = []
         self._errors = []
         self._cancelled = 0
+        self._adjusted = 0
         self._cancel_errors = 0
         self._verified = 0
         self._refund_skipped = 0
@@ -63,14 +67,17 @@ class EmailNotifier:
     def on_pending_found(self, count: int):
         self._pending_count = count
 
-    def on_payment_success(self, amount: float):
-        self._payments.append(amount)
+    def on_payment_success(self, amount):
+        self._payments.append(Decimal(str(amount)))
 
     def on_payment_error(self, payment_id: str, error: str):
         self._errors.append((payment_id, error))
 
     def on_refund_cancelled(self):
         self._cancelled += 1
+
+    def on_refund_adjusted(self):
+        self._adjusted += 1
 
     def on_refund_error(self):
         self._cancel_errors += 1
@@ -80,6 +87,9 @@ class EmailNotifier:
 
     def on_refund_skipped(self):
         self._refund_skipped += 1
+
+    def on_pending_refunds_found(self, count: int):
+        self._pending_refund_count = count
 
     def on_yookassa_error(self, message: str):
         self._yookassa_errors.append(message)
@@ -108,8 +118,9 @@ class EmailNotifier:
     async def send_summary(self):
         has_activity = (
             self._payments or self._errors or
-            self._cancelled or self._cancel_errors or
+            self._cancelled or self._adjusted or self._cancel_errors or
             self._refund_skipped or self._yookassa_errors or
+            self._pending_count or self._pending_refund_count or
             self._update_available
         )
         if not has_activity:
@@ -146,7 +157,7 @@ class EmailNotifier:
     def _build_html(self) -> str:
         successful = len(self._payments)
         failed = len(self._errors)
-        total = sum(self._payments)
+        total = sum(self._payments, Decimal("0"))
 
         date_str = self._start_time.strftime("%d.%m.%Y %H:%M") if self._start_time else "—"
 
@@ -186,13 +197,20 @@ class EmailNotifier:
             </div>
             """)
 
+        if self._pending_refund_count:
+            sections.append(f"""
+            <div style="background:#fff3cd; border-left:4px solid #ffc107; padding:12px 16px; margin-bottom:16px; border-radius:4px;">
+              <strong>↩️ Частичных возвратов для ручной обработки: {self._pending_refund_count}</strong>
+            </div>
+            """)
+
         if successful or failed:
             if failed == 0:
                 status_line = f"<span style='color:#27ae60;'>✅ Успешно: <b>{successful}</b> из {self._found_count} {_plural(self._found_count, 'платежа', 'платежей', 'платежей')}</span>"
             else:
                 status_line = f"<span style='color:#27ae60;'>✅ Успешно: <b>{successful}</b></span> | <span style='color:#e74c3c;'>❌ Ошибок: <b>{failed}</b></span>"
 
-            total_str = f"{total:,.0f}".replace(",", "&nbsp;")
+            total_str = f"{total:,.2f}".replace(",", "&nbsp;")
 
             payment_block = f"""
             <h3 style="color:#2c3e50; margin-bottom:8px;">Платежи</h3>
@@ -203,7 +221,7 @@ class EmailNotifier:
             if self._verified:
                 payment_block += f'<p style="margin:4px 0; color:#7f8c8d; font-size:13px;">🔍 Из них верифицировано через API: {self._verified}</p>'
 
-            breakdown: dict[float, int] = defaultdict(int)
+            breakdown: dict[Decimal, int] = defaultdict(int)
             for amount in self._payments:
                 breakdown[amount] += 1
 
@@ -212,7 +230,7 @@ class EmailNotifier:
                 for amount in sorted(breakdown.keys(), reverse=True):
                     count = breakdown[amount]
                     word = _plural(count, "платёж", "платежа", "платежей")
-                    rows.append(f"<tr><td style='padding:4px 12px 4px 0;'>{amount:g} руб.</td><td style='color:#7f8c8d;'>{count} {word}</td></tr>")
+                    rows.append(f"<tr><td style='padding:4px 12px 4px 0;'>{amount:.2f} руб.</td><td style='color:#7f8c8d;'>{count} {word}</td></tr>")
                 payment_block += f"""
                 <p style="margin:12px 0 4px;"><b>📊 Разбивка:</b></p>
                 <table style="border-collapse:collapse; font-size:14px;">
@@ -222,15 +240,17 @@ class EmailNotifier:
 
             sections.append(payment_block)
 
-        if self._cancelled or self._cancel_errors or self._refund_skipped:
+        if self._cancelled or self._adjusted or self._cancel_errors or self._refund_skipped:
             refund_block = '<h3 style="color:#2c3e50; margin-top:20px; margin-bottom:8px;">Возвраты</h3>'
             if self._cancelled:
                 word = _plural(self._cancelled, "чек аннулирован", "чека аннулировано", "чеков аннулировано")
                 refund_block += f'<p style="margin:4px 0;">↩️ <b>{self._cancelled}</b> {word}</p>'
+            if self._adjusted:
+                refund_block += f'<p style="margin:4px 0;">🧾 Частичных возвратов скорректировано: <b>{self._adjusted}</b></p>'
             if self._cancel_errors:
                 refund_block += f'<p style="margin:4px 0; color:#e74c3c;">⚠️ Ошибок аннулирования: <b>{self._cancel_errors}</b></p>'
             if self._refund_skipped:
-                refund_block += f'<p style="margin:4px 0; color:#7f8c8d;">⏭ Пропущено возвратов (нет чека): <b>{self._refund_skipped}</b></p>'
+                refund_block += f'<p style="margin:4px 0; color:#7f8c8d;">⏭ Передано на ручную обработку: <b>{self._refund_skipped}</b></p>'
             sections.append(refund_block)
 
         if self._errors:
