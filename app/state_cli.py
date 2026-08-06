@@ -111,7 +111,9 @@ def retry_payment(store, payment_id):
             print("Нельзя повторить платёж в неподдерживаемой валюте.")
             return 2
         workflow["status"] = "ready"
+        workflow["queue_attempts"] = 0
         workflow.pop("error", None)
+        workflow.pop("last_notified_error", None)
         store.save(state)
         print(f"Платёж {payment_id} поставлен на повторную обработку.")
         return 0

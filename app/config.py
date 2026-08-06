@@ -30,6 +30,7 @@ INCOME_DESCRIPTION_TEMPLATE = os.getenv("INCOME_DESCRIPTION_TEMPLATE", "Плат
 CRON_SCHEDULE = os.getenv("CRON_SCHEDULE", "0 */4 * * *")
 FNS_RETRY_SCHEDULE = os.getenv("FNS_RETRY_SCHEDULE", "*/5 * * * *")
 FNS_RETRY_DELAY_SECONDS = float(os.getenv("FNS_RETRY_DELAY_SECONDS", "3"))
+FNS_QUEUE_MAX_ATTEMPTS = int(os.getenv("FNS_QUEUE_MAX_ATTEMPTS", "0"))
 STATE_RETENTION_DAYS = int(os.getenv("STATE_RETENTION_DAYS", "1095"))
 HEALTH_MAX_AGE_HOURS = float(os.getenv("HEALTH_MAX_AGE_HOURS", "25"))
 
@@ -46,6 +47,13 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 TELEGRAM_THREAD_ID = os.getenv("TELEGRAM_THREAD_ID")
 TELEGRAM_PROXY = os.getenv("TELEGRAM_PROXY")
+TELEGRAM_ADMIN_USER_ID = os.getenv("TELEGRAM_ADMIN_USER_ID")
+TELEGRAM_ADMIN_BOT_ENABLED = os.getenv(
+    "TELEGRAM_ADMIN_BOT_ENABLED", "false"
+).lower() in ("1", "true", "yes", "on")
+TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES = float(
+    os.getenv("TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES", "5")
+)
 
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -91,6 +99,12 @@ def validate_config():
     parse_sync_start(SYNC_START_DATE)
     if FNS_RETRY_DELAY_SECONDS < 0:
         raise ValueError("FNS_RETRY_DELAY_SECONDS не может быть отрицательным.")
+    if FNS_QUEUE_MAX_ATTEMPTS < 0:
+        raise ValueError("FNS_QUEUE_MAX_ATTEMPTS не может быть отрицательным.")
+    if TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES <= 0:
+        raise ValueError(
+            "TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES должен быть положительным."
+        )
     if STATE_RETENTION_DAYS < 1:
         raise ValueError("STATE_RETENTION_DAYS должен быть положительным числом.")
     if HEALTH_MAX_AGE_HOURS <= 0:
@@ -127,6 +141,13 @@ def validate_config():
         raise ValueError("TELEGRAM_BOT_TOKEN задан, но TELEGRAM_CHAT_ID отсутствует.")
     if TELEGRAM_CHAT_ID and not TELEGRAM_BOT_TOKEN:
         raise ValueError("TELEGRAM_CHAT_ID задан, но TELEGRAM_BOT_TOKEN отсутствует.")
+    if TELEGRAM_ADMIN_BOT_ENABLED and not (
+        TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID and TELEGRAM_ADMIN_USER_ID
+    ):
+        raise ValueError(
+            "Для TELEGRAM_ADMIN_BOT_ENABLED=true задайте TELEGRAM_BOT_TOKEN, "
+            "TELEGRAM_CHAT_ID и TELEGRAM_ADMIN_USER_ID."
+        )
     if BACKUP_TARGET == "telegram" and not (
         TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
     ):

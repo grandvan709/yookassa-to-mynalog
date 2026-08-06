@@ -53,6 +53,8 @@ class TelegramNotifier:
         self._verified = 0
         self._refund_skipped = 0
         self._yookassa_errors = []
+        self._pending_count = 0
+        self._pending_refund_count = 0
 
     def on_pending_found(self, count: int):
         self._pending_count = count

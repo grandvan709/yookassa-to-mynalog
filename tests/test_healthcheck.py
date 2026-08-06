@@ -32,7 +32,7 @@ class HealthcheckTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def _run(self, status):
+    def _run(self, status, extra_environment=None):
         (self.data / "health.json").write_text(
             json.dumps(status), encoding="utf-8"
         )
@@ -41,7 +41,9 @@ class HealthcheckTests(unittest.TestCase):
             "LOG_DIR": str(self.logs),
             "BACKUP_TARGET": "",
             "HEALTH_MAX_AGE_HOURS": "25",
+            "TELEGRAM_ADMIN_BOT_ENABLED": "false",
         }
+        environment.update(extra_environment or {})
         with patch.dict(os.environ, environment, clear=False):
             with patch.object(healthcheck, "_cron_is_running", return_value=True):
                 with redirect_stdout(StringIO()):
@@ -74,6 +76,55 @@ class HealthcheckTests(unittest.TestCase):
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
         )
+        self.assertEqual(1, result)
+
+    def test_enabled_telegram_bot_requires_fresh_status(self):
+        (self.data / "telegram_bot_status.json").write_text(
+            json.dumps({
+                "status": "ok",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }),
+            encoding="utf-8",
+        )
+        result = self._run(
+            {
+                "status": "ok",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "TELEGRAM_ADMIN_BOT_ENABLED": "true",
+                "TELEGRAM_BOT_TOKEN": "token",
+                "TELEGRAM_CHAT_ID": "chat",
+                "TELEGRAM_ADMIN_USER_ID": "user",
+            },
+        )
+
+        self.assertEqual(0, result)
+
+    def test_stale_telegram_bot_status_fails(self):
+        (self.data / "telegram_bot_status.json").write_text(
+            json.dumps({
+                "status": "ok",
+                "updated_at": (
+                    datetime.now(timezone.utc) - timedelta(minutes=6)
+                ).isoformat(),
+            }),
+            encoding="utf-8",
+        )
+        result = self._run(
+            {
+                "status": "ok",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            {
+                "TELEGRAM_ADMIN_BOT_ENABLED": "true",
+                "TELEGRAM_BOT_TOKEN": "token",
+                "TELEGRAM_CHAT_ID": "chat",
+                "TELEGRAM_ADMIN_USER_ID": "user",
+                "TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES": "5",
+            },
+        )
+
         self.assertEqual(1, result)
 
 

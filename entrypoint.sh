@@ -31,6 +31,7 @@ FNS_RETRY_SCHEDULE=$(runuser -u "$APP_USER" -- python -c "import config; print(c
 APP_TZ=$(runuser -u "$APP_USER" -- python -c "import config; print(config.TZ or '')")
 BACKUP_TARGET=$(runuser -u "$APP_USER" -- python -c "import config; print(config.BACKUP_TARGET)")
 BACKUP_SCHEDULE=$(runuser -u "$APP_USER" -- python -c "import config; print(config.BACKUP_SCHEDULE)")
+TELEGRAM_ADMIN_BOT_ENABLED=$(runuser -u "$APP_USER" -- python -c "import config; print('1' if config.TELEGRAM_ADMIN_BOT_ENABLED and config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID and config.TELEGRAM_ADMIN_USER_ID else '0')")
 
 python - "$CRON_SCHEDULE" "$FNS_RETRY_SCHEDULE" "$BACKUP_SCHEDULE" "$APP_TZ" <<'PY'
 import re
@@ -82,6 +83,17 @@ fi
 
 echo ""
 echo "→ Первая синхронизация завершена. Переключение на работу по расписанию."
+
+if [ "$TELEGRAM_ADMIN_BOT_ENABLED" = "1" ]; then
+    echo "→ Запускаю Telegram-бота управления."
+    (
+        while true; do
+            runuser -u "$APP_USER" -- python /app/telegram_admin_bot.py
+            echo "Telegram-бот завершился; повторный запуск через 5 секунд." >&2
+            sleep 5
+        done
+    ) &
+fi
 
 {
     printf 'SHELL=/bin/sh\n'

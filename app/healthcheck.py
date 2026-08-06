@@ -91,7 +91,36 @@ def main():
         if datetime.now(timezone.utc) - backup_updated > backup_max_age:
             return fail(f"последний backup старше {backup_max_age}")
 
-    print("OK: cron, синхронизация, SQLite и backup в норме")
+    admin_bot_enabled = os.getenv(
+        "TELEGRAM_ADMIN_BOT_ENABLED", "false"
+    ).lower() in ("1", "true", "yes", "on")
+    if (
+        admin_bot_enabled
+        and os.getenv("TELEGRAM_BOT_TOKEN")
+        and os.getenv("TELEGRAM_CHAT_ID")
+        and os.getenv("TELEGRAM_ADMIN_USER_ID")
+    ):
+        bot_status_path = data_dir / "telegram_bot_status.json"
+        bot_max_age = timedelta(
+            minutes=float(
+                os.getenv("TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES", "5")
+            )
+        )
+        try:
+            bot_status = json.loads(bot_status_path.read_text(encoding="utf-8"))
+            bot_updated = _parse_timestamp(bot_status["updated_at"])
+        except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
+            return fail(f"некорректный статус Telegram-бота: {exc}")
+        if bot_status.get("status") != "ok":
+            return fail(
+                "Telegram-бот: "
+                f"{bot_status.get('status', 'unknown')}; "
+                f"{bot_status.get('error', 'без деталей')}"
+            )
+        if datetime.now(timezone.utc) - bot_updated > bot_max_age:
+            return fail(f"Telegram-бот не отвечает дольше {bot_max_age}")
+
+    print("OK: включённые компоненты, синхронизация и SQLite в норме")
     return 0
 
 

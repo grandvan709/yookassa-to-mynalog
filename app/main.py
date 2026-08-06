@@ -82,7 +82,28 @@ class SyncManager:
 
     def _emit(self, method, *args):
         for n in self.event_notifiers:
+            if n is self.notifier and not self._telegram_event_enabled(method):
+                continue
             getattr(n, method)(*args)
+
+    def _telegram_event_enabled(self, method):
+        preferences = self.state.get("notification_preferences", {})
+        if method in {
+            "on_payment_success",
+            "on_payment_verified",
+            "on_refund_cancelled",
+            "on_refund_adjusted",
+        }:
+            return preferences.get("receipt_success", True)
+        if method in {
+            "on_payment_error",
+            "on_refund_error",
+            "on_yookassa_error",
+            "on_pending_found",
+            "on_pending_refunds_found",
+        }:
+            return preferences.get("receipt_errors", True)
+        return True
 
     async def startup_notify(self):
         if os.environ.get("STARTUP_NOTIFY") != "1":
@@ -101,7 +122,11 @@ class SyncManager:
             "payment_balances": {},
             "payment_event_times": {},
             "refund_event_times": {},
-            "last_refund_sync_time": None
+            "last_refund_sync_time": None,
+            "notification_preferences": {
+                "receipt_success": True,
+                "receipt_errors": True,
+            },
         }
         for key, default in defaults.items():
             if key not in state:
@@ -126,7 +151,11 @@ class SyncManager:
             "payment_balances": {},
             "payment_event_times": {},
             "refund_event_times": {},
-            "last_refund_sync_time": None
+            "last_refund_sync_time": None,
+            "notification_preferences": {
+                "receipt_success": True,
+                "receipt_errors": True,
+            },
         }
         self.state_store.save(base)
         return base
@@ -273,12 +302,13 @@ class SyncManager:
             "description": description,
             "status": "ready" if currency == "RUB" else "unsupported_currency",
             "attempts": 0,
+            "queue_attempts": 0,
         }
         self.state["pending_payments"].append(workflow)
         self.save_state()
         return workflow
 
-    async def _resume_payment_workflow(self, workflow):
+    async def _resume_payment_workflow(self, workflow, queue_attempt=False):
         if isinstance(workflow, str):
             return "manual", None
 
@@ -292,6 +322,17 @@ class SyncManager:
         )
         workflow["attempts"] = int(workflow.get("attempts", 0)) + 1
         workflow["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
+        if status == "ready" and queue_attempt:
+            maximum = config.FNS_QUEUE_MAX_ATTEMPTS
+            current = int(workflow.get("queue_attempts", 0))
+            if maximum and current >= maximum:
+                workflow["status"] = "retry_exhausted"
+                workflow["error"] = (
+                    f"достигнут лимит повторов очереди ФНС: {maximum}"
+                )
+                self.save_state()
+                return "manual", None
+            workflow["queue_attempts"] = current + 1
         self.save_state()
 
         if status == "ready":
@@ -336,6 +377,18 @@ class SyncManager:
             workflow["status"] = "ready"
         else:
             workflow["status"] = "rejected"
+        if (
+            queue_attempt
+            and workflow["status"] == "ready"
+            and config.FNS_QUEUE_MAX_ATTEMPTS
+            and workflow.get("queue_attempts", 0)
+            >= config.FNS_QUEUE_MAX_ATTEMPTS
+        ):
+            workflow["status"] = "retry_exhausted"
+            workflow["error"] = (
+                f"{workflow.get('error') or 'ФНС недоступна'}; достигнут лимит "
+                f"повторов: {config.FNS_QUEUE_MAX_ATTEMPTS}"
+            )
         self.save_state()
         return "manual", None
 
@@ -364,7 +417,9 @@ class SyncManager:
         workflows = list(self.state.get("pending_payments", []))
         for index, workflow in enumerate(workflows):
             try:
-                result, amount = await self._resume_payment_workflow(workflow)
+                result, amount = await self._resume_payment_workflow(
+                    workflow, queue_attempt=True
+                )
             except Exception as e:
                 if isinstance(workflow, dict):
                     workflow["status"] = "manual_error"
@@ -376,6 +431,18 @@ class SyncManager:
                 completed_amounts.append(amount)
             else:
                 manual += 1
+                if isinstance(workflow, dict):
+                    error = workflow.get("error")
+                    signature = f"{workflow.get('status')}:{error}"
+                    if error and workflow.get("last_notified_error") != signature:
+                        self._emit(
+                            "on_payment_error",
+                            workflow.get("payment_id", "unknown"),
+                            f"Мой Налог: {error} "
+                            f"(статус: {workflow.get('status')})",
+                        )
+                        workflow["last_notified_error"] = signature
+                        self.save_state()
                 if (
                     stop_on_unavailable
                     and isinstance(workflow, dict)
@@ -964,6 +1031,12 @@ def print_banner():
         ("Авторизация", config.MOY_NALOG_AUTH_METHOD),
         ("Расписание", config.CRON_SCHEDULE),
         ("Повторы ФНС", config.FNS_RETRY_SCHEDULE),
+        (
+            "Лимит очереди",
+            str(config.FNS_QUEUE_MAX_ATTEMPTS)
+            if config.FNS_QUEUE_MAX_ATTEMPTS
+            else "без ограничений",
+        ),
         ("Telegram", telegram_status),
         ("Email", email_status),
     ]

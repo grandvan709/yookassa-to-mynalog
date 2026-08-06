@@ -5,7 +5,7 @@ import unittest
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
@@ -323,6 +323,59 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(["first"], [call[0] for call in nalog.add_calls])
         self.assertEqual(1, manager.state["pending_payments"][0]["attempts"])
         self.assertNotIn("attempts", manager.state["pending_payments"][1])
+
+    def test_retry_queue_keeps_receipt_after_attempt_limit(self):
+        nalog = FakeNalog(failed_payment_ids={"limited"})
+        nalog.last_error_retryable = True
+        nalog.last_operation_uncertain = False
+        manager = manager_with([], [], nalog)
+        manager.state["pending_payments"] = [{
+            "payment_id": "limited",
+            "amount": "100.00",
+            "currency": "RUB",
+            "created_at": "2026-01-02T00:00:00Z",
+            "description": "limited",
+            "status": "ready",
+            "queue_attempts": 0,
+        }]
+
+        with patch.object(config, "FNS_QUEUE_MAX_ATTEMPTS", 2):
+            asyncio.run(manager._resume_pending_payments())
+            asyncio.run(manager._resume_pending_payments())
+            call_count_at_limit = len(nalog.add_calls)
+            asyncio.run(manager._resume_pending_payments())
+
+        workflow = manager.state["pending_payments"][0]
+        self.assertEqual("retry_exhausted", workflow["status"])
+        self.assertEqual(2, workflow["queue_attempts"])
+        self.assertEqual(2, call_count_at_limit)
+        self.assertEqual(call_count_at_limit, len(nalog.add_calls))
+
+    def test_telegram_preferences_do_not_disable_email_events(self):
+        manager = manager_with([], [], FakeNalog())
+        telegram = SimpleNamespace(
+            on_payment_success=Mock(),
+            on_payment_error=Mock(),
+        )
+        email = SimpleNamespace(
+            on_payment_success=Mock(),
+            on_payment_error=Mock(),
+        )
+        manager.notifier = telegram
+        manager.email_notifier = email
+        manager.event_notifiers = [telegram, email]
+        manager.state["notification_preferences"] = {
+            "receipt_success": False,
+            "receipt_errors": False,
+        }
+
+        manager._emit("on_payment_success", Decimal("10.00"))
+        manager._emit("on_payment_error", "payment", "error")
+
+        telegram.on_payment_success.assert_not_called()
+        telegram.on_payment_error.assert_not_called()
+        email.on_payment_success.assert_called_once()
+        email.on_payment_error.assert_called_once()
 
     def test_fns_only_worker_does_not_fetch_yookassa(self):
         nalog = FakeNalog()
