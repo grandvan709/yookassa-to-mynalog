@@ -5,10 +5,16 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      # На серверах с заблокированным Docker bridge сборочные RUN-команды
+      # используют сеть хоста. На обычной установке Linux это также работает.
+      network: ${DOCKER_BUILD_NETWORK:-host}
       args:
         APP_UID: ${APP_UID:-1000}
         APP_GID: ${APP_GID:-1000}
     restart: unless-stopped
+    # Если уже запущенный контейнер тоже не выходит в интернет через bridge,
+    # задайте DOCKER_NETWORK_MODE=host в .env.
+    network_mode: ${DOCKER_NETWORK_MODE:-bridge}
     init: true
     env_file:
       - .env

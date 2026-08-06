@@ -130,6 +130,8 @@ bash install.sh
 | `TZ` | `Europe/Moscow` | Часовой пояс контейнера ([список](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
 | `APP_UID` | `1000` | UID пользователя контейнера для доступа к каталогам хоста; установщик задаёт автоматически |
 | `APP_GID` | `1000` | GID группы контейнера для доступа к каталогам хоста; установщик задаёт автоматически |
+| `DOCKER_BUILD_NETWORK` | `host` | Сеть для сборочных команд; `host` обходит проблемы Docker bridge с доступом в интернет |
+| `DOCKER_NETWORK_MODE` | `bridge` | Сеть работающего контейнера; переключите на `host`, если внешние API недоступны |
 | `DEVICE_ID` | Генерация хеша из ИНН (21 символ) | ID устройства для авторизации в "Мой Налог". В режиме `password` — опционально; в режиме `refresh` — обязателен (берётся из браузера) |
 | `SYNC_START_DATE` | -24ч | Включительная граница начала: `YYYY-MM-DD` или точное время ISO 8601 |
 | `INCOME_DESCRIPTION_TEMPLATE` | `Платеж #{description}` | Шаблон описания дохода (см. ниже) |
@@ -349,6 +351,25 @@ docker compose up -d --build
 Compose всегда собирает образ приложения из локального `Dockerfile`; образ
 приложения из Docker Hub не скачивается. Базовый `python:3.13-slim-bookworm`
 будет загружен один раз, если его ещё нет в локальном кеше Docker.
+
+Если сборка сообщает `Unable to connect to deb.debian.org`, значит исходящие
+соединения из Docker bridge заблокированы межсетевым экраном или правилами NAT.
+По умолчанию сборка уже использует сеть хоста. Убедитесь, что в `.env` нет
+`DOCKER_BUILD_NETWORK='bridge'`, затем повторите:
+
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
+Если образ собирается, но работающий контейнер не подключается к YooKassa,
+ФНС или Telegram, задайте в `.env`:
+
+```env
+DOCKER_NETWORK_MODE='host'
+```
+
+После этого пересоздайте контейнер командой `docker compose up -d --force-recreate`.
 
 ### Проверка логов
 ```bash
