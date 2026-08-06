@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from collections import deque
 from pathlib import Path
 
@@ -59,6 +60,7 @@ class TelegramAdminBot:
         )
         self.offset = self._load_offset()
         self.pending_input = None
+        self.pending_input_deadline = None
         self._reply_chat_id = self.admin_chat_id
         self._reply_thread_id = self.thread_id
 
@@ -471,6 +473,9 @@ class TelegramAdminBot:
         if callback_id:
             await self._api("answerCallbackQuery", callback_query_id=callback_id)
         action = callback.get("data") or ""
+        if action not in ("report:chat:input", "report:thread:input"):
+            self.pending_input = None
+            self.pending_input_deadline = None
         if action == "menu:main":
             await self.show_main_menu()
         elif action == "menu:notifications":
@@ -525,9 +530,11 @@ class TelegramAdminBot:
                 await self.show_receipt_reports()
         elif action == "report:chat:input":
             self.pending_input = "report_chat_id"
+            self.pending_input_deadline = time.monotonic() + 300
             await self.send("Отправьте числовой ID группы, например <code>-1001234567890</code>.")
         elif action == "report:thread:input":
             self.pending_input = "report_thread_id"
+            self.pending_input_deadline = time.monotonic() + 300
             await self.send("Отправьте числовой ID темы. Его можно получить кнопкой «Использовать этот чат и тему» внутри нужной темы.")
         elif action == "report:thread:clear":
             if await self.update_receipt_report(thread_id=None):
@@ -583,21 +590,6 @@ class TelegramAdminBot:
         self._reply_chat_id = chat_id
         self._reply_thread_id = message.get("message_thread_id")
         text = (message.get("text") or "").strip()
-        if getattr(self, "pending_input", None):
-            try:
-                value = int(text)
-            except ValueError:
-                await self.send("Нужен числовой ID. Для отмены нажмите /start.")
-                return
-            key = "chat_id" if self.pending_input == "report_chat_id" else "thread_id"
-            saved = await self.update_receipt_report(
-                **{key: str(value) if key == "chat_id" else value}
-            )
-            if not saved:
-                return
-            self.pending_input = None
-            await self.show_receipt_reports()
-            return
         button_actions = {
             "📊 Статус": self.command_status,
             "📋 Очередь": self.show_queue,
@@ -607,6 +599,36 @@ class TelegramAdminBot:
             "📄 Логи": self.show_logs_menu,
             "ℹ️ Помощь": self.show_main_menu,
         }
+        deadline = getattr(self, "pending_input_deadline", None)
+        if deadline and time.monotonic() >= deadline:
+            self.pending_input = None
+            self.pending_input_deadline = None
+        if getattr(self, "pending_input", None):
+            if text.startswith("/") or text in button_actions:
+                self.pending_input = None
+                self.pending_input_deadline = None
+                if text.split("@", 1)[0].lower() == "/cancel":
+                    await self.show_receipt_reports()
+                    return
+            else:
+                try:
+                    value = int(text)
+                except ValueError:
+                    await self.send(
+                        "Нужен числовой ID. Для отмены нажмите /cancel, /start "
+                        "или любую кнопку меню."
+                    )
+                    return
+                key = "chat_id" if self.pending_input == "report_chat_id" else "thread_id"
+                saved = await self.update_receipt_report(
+                    **{key: str(value) if key == "chat_id" else value}
+                )
+                if not saved:
+                    return
+                self.pending_input = None
+                self.pending_input_deadline = None
+                await self.show_receipt_reports()
+                return
         if text in button_actions:
             await button_actions[text]()
             return
@@ -618,6 +640,8 @@ class TelegramAdminBot:
         arguments = arguments.strip()
         if command in ("/start", "/help"):
             await self.show_main_menu()
+        elif command == "/cancel":
+            await self.show_receipt_reports()
         elif command == "/status":
             await self.command_status()
         elif command == "/logs":
@@ -641,6 +665,7 @@ class TelegramAdminBot:
                 {"command": "backup", "description": "Создать резервную копию"},
                 {"command": "backups", "description": "Список резервных копий"},
                 {"command": "notifications", "description": "Настроить уведомления"},
+                {"command": "cancel", "description": "Отменить ввод значения"},
                 {"command": "help", "description": "Список команд"},
             ],
         )

@@ -142,6 +142,37 @@ class TelegramAdminBotTests(unittest.TestCase):
         item = self.bot.store.load()["pending_refunds"][0]
         self.assertEqual("cancelled", item["status"])
 
+    def test_start_cancels_report_id_input(self):
+        self.bot.pending_input = "report_chat_id"
+        self.bot.pending_input_deadline = None
+        self.bot.show_main_menu = AsyncMock()
+        update = {"message": {
+            "chat": {"id": -1001},
+            "from": {"id": 42},
+            "text": "/start",
+        }}
+
+        asyncio.run(self.bot.handle(update))
+
+        self.assertIsNone(self.bot.pending_input)
+        self.bot.show_main_menu.assert_awaited_once()
+        self.bot.send.assert_not_awaited()
+
+    def test_menu_button_cancels_report_id_input_and_runs_action(self):
+        self.bot.pending_input = "report_chat_id"
+        self.bot.pending_input_deadline = None
+        self.bot.command_status = AsyncMock()
+        update = {"message": {
+            "chat": {"id": -1001},
+            "from": {"id": 42},
+            "text": "📊 Статус",
+        }}
+
+        asyncio.run(self.bot.handle(update))
+
+        self.assertIsNone(self.bot.pending_input)
+        self.bot.command_status.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()
