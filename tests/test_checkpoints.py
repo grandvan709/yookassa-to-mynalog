@@ -12,7 +12,9 @@ APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
 import config
+import main as main_module
 from main import SyncManager
+from state_store import ConcurrentRunError
 
 
 def payment(payment_id, created_at, amount="100.00"):
@@ -436,6 +438,21 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual([], manager.state["pending_payments"])
         self.assertEqual(1, manager.state_store.acquired)
         self.assertEqual(1, manager.state_store.released)
+
+    def test_scheduled_collision_is_a_normal_skipped_run(self):
+        manager = SimpleNamespace(
+            retry_fns_queue=AsyncMock(
+                side_effect=ConcurrentRunError("already running")
+            ),
+            nalog=SimpleNamespace(close=AsyncMock()),
+        )
+        with patch.object(main_module, "SyncManager", return_value=manager), patch.object(
+            main_module, "print_banner"
+        ), patch.object(main_module.logging, "info") as log_info:
+            asyncio.run(main_module.main(retry_fns_only=True))
+
+        manager.nalog.close.assert_awaited_once()
+        log_info.assert_called_once()
 
     def test_permanent_payment_rejection_is_not_retried(self):
         nalog = FakeNalog(failed_payment_ids={"invalid"})

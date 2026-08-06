@@ -13,7 +13,7 @@ from nalog_api import MoyNalogAPI
 from telegram_notifier import TelegramNotifier
 from email_notifier import EmailNotifier
 from utils import build_template_vars
-from state_store import StateStore
+from state_store import ConcurrentRunError, StateStore
 from health_state import write_status
 
 LOG_DIR = os.getenv("LOG_DIR", "logs")
@@ -1132,6 +1132,7 @@ def print_banner():
 
 
 async def main(retry_fns_only=False):
+    manager = None
     try:
         print_banner()
         manager = SyncManager()
@@ -1140,6 +1141,14 @@ async def main(retry_fns_only=False):
         else:
             await manager.startup_notify()
             await manager.sync()
+    except ConcurrentRunError:
+        job = "обработка очереди ФНС" if retry_fns_only else "основная синхронизация"
+        logging.info(
+            "%s пропущена: другой процесс синхронизации уже работает.",
+            job.capitalize(),
+        )
+        if manager is not None:
+            await manager.nalog.close()
     except Exception as e:
         logging.critical(f"Критическая ошибка: {e}", exc_info=True)
         exit(1)
