@@ -244,12 +244,14 @@ def run_backup():
             password,
             include_logs=_bool_env("BACKUP_INCLUDE_LOGS", True),
         )
-        _prune(path.parent, int(os.getenv("BACKUP_RETENTION_COUNT", "7")))
-        if path.stat().st_size > max_bytes:
+        size = path.stat().st_size
+        if size > max_bytes:
+            path.unlink()
             raise ValueError(
-                f"backup {path.stat().st_size / 1024 / 1024:.1f} МБ превышает "
+                f"backup {size / 1024 / 1024:.1f} МБ превышает "
                 f"BACKUP_MAX_MB"
             )
+        _prune(path.parent, int(os.getenv("BACKUP_RETENTION_COUNT", "7")))
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         caption = (
             f"Зашифрованный backup YooKassa → Мой Налог\n"

@@ -89,6 +89,29 @@ class BackupTests(unittest.TestCase):
     def test_email_delivery_route(self):
         self._run_delivery_test("email", "_send_email")
 
+    def test_oversize_backup_is_removed_before_error_is_reported(self):
+        environment = {
+            "DATA_DIR": str(self.data),
+            "LOG_DIR": str(self.logs),
+            "BACKUP_TARGET": "telegram",
+            "BACKUP_PASSWORD": self.password,
+            "BACKUP_INCLUDE_LOGS": "false",
+            "BACKUP_RETENTION_COUNT": "7",
+            "BACKUP_MAX_MB": "0.000001",
+        }
+        with patch.dict(os.environ, environment, clear=False), patch(
+            "backup._send_telegram"
+        ) as sender:
+            with self.assertRaisesRegex(ValueError, "BACKUP_MAX_MB"):
+                run_backup()
+
+        sender.assert_not_called()
+        self.assertEqual([], list((self.data / "backups").glob("*.ynbackup")))
+        status = json.loads(
+            (self.data / "backup_status.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual("failed", status["status"])
+
 
 if __name__ == "__main__":
     unittest.main()

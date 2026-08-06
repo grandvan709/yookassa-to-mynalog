@@ -17,11 +17,11 @@ from main import SyncManager
 from state_store import ConcurrentRunError
 
 
-def payment(payment_id, created_at, amount="100.00"):
+def payment(payment_id, created_at, amount="100.00", currency="RUB"):
     return SimpleNamespace(
         id=payment_id,
         created_at=created_at,
-        amount=SimpleNamespace(value=amount, currency="RUB"),
+        amount=SimpleNamespace(value=amount, currency=currency),
         description=payment_id,
         metadata={},
         invoice_details=None,
@@ -106,6 +106,7 @@ def manager_with(
         "last_refund_sync_time": "2026-01-01T00:00:00Z",
         "processed_payments": [],
         "pending_payments": [],
+        "skipped_payments": [],
         "processed_refunds": [],
         "pending_refunds": [],
         "payment_balances": {},
@@ -164,6 +165,7 @@ class CheckpointTests(unittest.TestCase):
 
         self.assertEqual([], state["pending_refunds"])
         self.assertEqual({}, state["payment_balances"])
+        self.assertEqual([], state["skipped_payments"])
 
     def test_pending_refund_is_not_returned_for_processing_again(self):
         manager = SyncManager.__new__(SyncManager)
@@ -485,23 +487,26 @@ class CheckpointTests(unittest.TestCase):
 
         self.assertIn("payment-unique", nalog.add_calls[0][0])
 
-    def test_non_rub_payment_is_held_without_calling_mynalog(self):
+    def test_non_rub_payment_is_skipped_without_blocking_checkpoint(self):
         foreign_payment = payment(
             "foreign",
             "2026-01-02T00:00:00Z",
             amount="10.00",
+            currency="USD",
         )
-        foreign_payment.amount.currency = "USD"
         nalog = FakeNalog()
         manager = manager_with([foreign_payment], [], nalog)
 
-        asyncio.run(manager.sync())
+        with patch("main.write_status") as write_status:
+            asyncio.run(manager.sync())
 
         self.assertEqual([], nalog.add_calls)
-        self.assertEqual(
-            "unsupported_currency",
-            manager.state["pending_payments"][0]["status"],
-        )
+        self.assertEqual([], manager.state["pending_payments"])
+        self.assertIn("foreign", manager.state["processed_payments"])
+        self.assertEqual("foreign", manager.state["skipped_payments"][0]["payment_id"])
+        self.assertEqual("USD", manager.state["skipped_payments"][0]["currency"])
+        self.assertEqual("2026-01-02T00:00:00Z", manager.state["last_sync_time"])
+        self.assertEqual("ok", write_status.call_args.args[1])
 
     def test_old_processed_history_is_pruned_behind_checkpoints(self):
         manager = manager_with([], [], FakeNalog())
@@ -514,6 +519,13 @@ class CheckpointTests(unittest.TestCase):
             "refund_event_times": {"old-refund": "2020-01-01T00:00:00Z"},
             "receipt_map": {"old-payment": "receipt-old"},
             "payment_balances": {"old-payment": "100.00"},
+            "skipped_payments": [{
+                "payment_id": "old-payment",
+                "amount": "100.00",
+                "currency": "USD",
+                "created_at": "2020-01-01T00:00:00Z",
+                "reason": "неподдерживаемая валюта",
+            }],
         })
 
         manager._prune_processed_history()
@@ -522,6 +534,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual([], manager.state["processed_refunds"])
         self.assertNotIn("old-payment", manager.state["receipt_map"])
         self.assertNotIn("old-payment", manager.state["payment_balances"])
+        self.assertEqual([], manager.state["skipped_payments"])
 
     def test_complete_payment_batch_advances_to_newest_item(self):
         payments = [

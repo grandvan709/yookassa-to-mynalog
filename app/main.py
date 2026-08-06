@@ -140,6 +140,7 @@ class SyncManager:
     def _ensure_state_fields(self, state):
         defaults = {
             "pending_payments": [],
+            "skipped_payments": [],
             "receipt_map": {},
             "processed_refunds": [],
             "pending_refunds": [],
@@ -178,6 +179,7 @@ class SyncManager:
             or (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
             "processed_payments": [],
             "pending_payments": [],
+            "skipped_payments": [],
             "receipt_map": {},
             "processed_refunds": [],
             "pending_refunds": [],
@@ -355,6 +357,12 @@ class SyncManager:
             return "manual", None
 
         status = workflow.get("status")
+        if status == "unsupported_currency":
+            self._complete_skipped_payment_workflow(
+                workflow,
+                f"валюта {workflow.get('currency') or 'не указана'} не поддерживается",
+            )
+            return "skipped", None
         if status not in ("ready", "creating", "unknown"):
             return "manual", None
 
@@ -451,6 +459,30 @@ class SyncManager:
         ]
         self.save_state()
 
+    def _complete_skipped_payment_workflow(self, workflow, reason):
+        payment_id = workflow["payment_id"]
+        if payment_id not in self.state["processed_payments"]:
+            self.state["processed_payments"].append(payment_id)
+        self.state["payment_event_times"][payment_id] = workflow["created_at"]
+        skipped = self.state.setdefault("skipped_payments", [])
+        skipped[:] = [item for item in skipped if item.get("payment_id") != payment_id]
+        skipped.append({
+            "payment_id": payment_id,
+            "amount": workflow["amount"],
+            "currency": workflow.get("currency"),
+            "created_at": workflow["created_at"],
+            "reason": reason,
+        })
+        self.state["pending_payments"] = [
+            item for item in self.state["pending_payments"]
+            if (
+                item != payment_id
+                if isinstance(item, str)
+                else item.get("payment_id") != payment_id
+            )
+        ]
+        self.save_state()
+
     async def _resume_pending_payments(
         self, stop_on_unavailable=False, delay_seconds=0
     ):
@@ -471,6 +503,22 @@ class SyncManager:
                 result, amount = "manual", None
             if result == "completed":
                 completed_amounts.append(amount)
+            elif result == "skipped":
+                if isinstance(workflow, dict):
+                    reason = (
+                        f"валюта {workflow.get('currency') or 'не указана'} "
+                        "не поддерживается"
+                    )
+                    logging.warning(
+                        "Платёж %s пропущен: %s.",
+                        workflow.get("payment_id", "unknown"),
+                        reason,
+                    )
+                    self._emit(
+                        "on_payment_error",
+                        workflow.get("payment_id", "unknown"),
+                        reason,
+                    )
             else:
                 manual += 1
                 if isinstance(workflow, dict):
@@ -730,6 +778,10 @@ class SyncManager:
                 self.state["payment_event_times"].pop(payment_id, None)
                 self.state["receipt_map"].pop(payment_id, None)
                 self.state["payment_balances"].pop(payment_id, None)
+            self.state["skipped_payments"] = [
+                item for item in self.state.get("skipped_payments", [])
+                if item.get("payment_id") not in removable_payments
+            ]
             changed = True
 
         removable_refunds = {
@@ -836,6 +888,7 @@ class SyncManager:
 
             successful = 0
             failed = 0
+            skipped = 0
 
             for payment in new_payments:
                 try:
@@ -844,6 +897,14 @@ class SyncManager:
                     if result == "completed":
                         successful += 1
                         self._emit("on_payment_success", amount)
+                    elif result == "skipped":
+                        skipped += 1
+                        reason = (
+                            f"валюта {workflow.get('currency') or 'не указана'} "
+                            "не поддерживается"
+                        )
+                        logging.warning(f"Платёж {payment.id} пропущен: {reason}.")
+                        self._emit("on_payment_error", payment.id, reason)
                     else:
                         sync_ok = False
                         failed += 1
@@ -870,7 +931,10 @@ class SyncManager:
                     self._emit("on_payment_error", payment.id, str(e)[:80])
 
             if new_payments:
-                logging.info(f"Результат платежей: успешно={successful}, ошибок={failed}")
+                logging.info(
+                    f"Результат платежей: успешно={successful}, "
+                    f"пропущено={skipped}, ошибок={failed}"
+                )
                 if not payments_error and failed == 0:
                     self.state["last_sync_time"] = _latest_created_at(new_payments)
                     self.save_state()
