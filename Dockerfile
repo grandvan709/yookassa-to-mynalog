@@ -10,7 +10,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 RUN test "$APP_UID" -gt 0 && test "$APP_GID" -gt 0 && \
-    apt-get update && \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' \
+        /etc/apt/sources.list.d/debian.sources && \
+    apt-get -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 update && \
     apt-get install -y --no-install-recommends cron tzdata util-linux && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --gid "$APP_GID" app && \
