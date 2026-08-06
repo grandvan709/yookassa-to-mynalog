@@ -19,6 +19,7 @@ from state_cli import (
     resolve_refund,
     retry_payment,
     retry_refund,
+    set_sync_start,
 )
 
 
@@ -149,6 +150,24 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(["payment-1"], state["processed_payments"])
         self.assertEqual("receipt-1", state["receipt_map"]["payment-1"])
         self.assertEqual("25.50", state["payment_balances"]["payment-1"])
+
+    def test_sync_start_can_be_changed_for_existing_database(self):
+        store = StateStore(self.db_path)
+        store.save({
+            "last_sync_time": "2026-01-01T00:00:00Z",
+            "last_refund_sync_time": "2026-01-01T00:00:00Z",
+        })
+
+        with redirect_stdout(StringIO()):
+            result = set_sync_start(store, "2026-08-06T15:42:30+03:00")
+
+        self.assertEqual(0, result)
+        state = store.load()
+        self.assertEqual("2026-08-06T12:42:30Z", state["last_sync_time"])
+        self.assertEqual(
+            "2026-08-06T12:42:30Z",
+            state["last_refund_sync_time"],
+        )
 
 
 if __name__ == "__main__":

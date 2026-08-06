@@ -2,6 +2,7 @@ import argparse
 import os
 from decimal import Decimal
 
+import config
 from state_store import StateStore
 
 
@@ -189,6 +190,24 @@ def retry_refund(store, refund_id):
         store.release_lock()
 
 
+def set_sync_start(store, value):
+    timestamp = config.parse_sync_start(value)
+    if not timestamp:
+        print("Необходимо указать дату или время начала синхронизации.")
+        return 2
+
+    store.acquire_lock()
+    try:
+        state = store.load() or {}
+        state["last_sync_time"] = timestamp
+        state["last_refund_sync_time"] = timestamp
+        store.save(state)
+        print(f"Начало синхронизации установлено: {timestamp}")
+        return 0
+    finally:
+        store.release_lock()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Управление SQLite state")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -204,6 +223,8 @@ def main():
     resolve_parser.add_argument("--replacement-receipt")
     retry_parser = subparsers.add_parser("retry-refund")
     retry_parser.add_argument("refund_id")
+    sync_start_parser = subparsers.add_parser("set-sync-start")
+    sync_start_parser.add_argument("timestamp")
     args = parser.parse_args()
 
     store = create_store()
@@ -217,6 +238,8 @@ def main():
         return resolve_payment(store, args.payment_id, args.receipt)
     if args.command == "retry-refund":
         return retry_refund(store, args.refund_id)
+    if args.command == "set-sync-start":
+        return set_sync_start(store, args.timestamp)
     return resolve_refund(store, args.refund_id, args.replacement_receipt)
 
 

@@ -1,10 +1,12 @@
 import os
 import time
+from datetime import date, datetime, time as datetime_time, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from dotenv import load_dotenv
 
 load_dotenv()
 
-TZ = os.getenv("TZ")
+TZ = os.getenv("TZ", "Europe/Moscow")
 if TZ:
     os.environ["TZ"] = TZ
     if hasattr(time, "tzset"):
@@ -56,7 +58,37 @@ SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() in ("1", "true", "yes")
 EMAIL_SUBJECT = os.getenv("EMAIL_SUBJECT", "Синхронизация чеков в налоговой")
 
 
+def parse_sync_start(value):
+    """Преобразовать дату/время начала синхронизации в точный UTC timestamp."""
+    if value is None or not str(value).strip():
+        return None
+
+    raw = str(value).strip()
+    try:
+        if len(raw) == 10:
+            parsed = datetime.combine(
+                date.fromisoformat(raw),
+                datetime_time.min,
+            )
+        else:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            "SYNC_START_DATE должен быть датой YYYY-MM-DD или временем ISO 8601, "
+            "например 2026-08-06T15:42:30+03:00."
+        ) from exc
+
+    if parsed.tzinfo is None:
+        try:
+            parsed = parsed.replace(tzinfo=ZoneInfo(TZ))
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"Неизвестный часовой пояс TZ: {TZ}") from exc
+
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def validate_config():
+    parse_sync_start(SYNC_START_DATE)
     if FNS_RETRY_DELAY_SECONDS < 0:
         raise ValueError("FNS_RETRY_DELAY_SECONDS не может быть отрицательным.")
     if STATE_RETENTION_DAYS < 1:

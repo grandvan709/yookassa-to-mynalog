@@ -207,6 +207,24 @@ class CheckpointTests(unittest.TestCase):
         self.assertIsNone(error)
         self.assertEqual(["payment-new"], [item.id for item in payments])
 
+    def test_payment_query_uses_exact_inclusive_start_timestamp(self):
+        manager = SyncManager.__new__(SyncManager)
+        manager.state = {
+            "last_sync_time": "2026-08-06T12:42:30Z",
+            "processed_payments": [],
+            "pending_payments": [],
+        }
+        response = SimpleNamespace(items=[], next_cursor=None)
+
+        with patch("main.Payment.list", return_value=response) as payment_list:
+            asyncio.run(manager.get_new_yookassa_payments())
+
+        params = payment_list.call_args.args[0]
+        self.assertEqual(
+            "2026-08-06T12:42:30Z",
+            params["created_at.gte"],
+        )
+
     def test_payment_failure_keeps_old_checkpoint(self):
         payments = [
             payment("new", "2026-01-03T00:00:00Z"),

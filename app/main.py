@@ -116,7 +116,8 @@ class SyncManager:
             return state
 
         base = {
-            "last_sync_time": f"{config.SYNC_START_DATE}T00:00:00Z" if config.SYNC_START_DATE else (datetime.now() - timedelta(days=1)).isoformat(),
+            "last_sync_time": config.parse_sync_start(config.SYNC_START_DATE)
+            or (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
             "processed_payments": [],
             "pending_payments": [],
             "receipt_map": {},
@@ -147,7 +148,7 @@ class SyncManager:
                 pass
 
         try:
-            url = "https://api.github.com/repos/grandvan709/yookassa-to-mynalog/releases/latest"
+            url = "https://api.github.com/repos/zavul0nn/yookassa-to-mynalog/releases/latest"
             with httpx.Client(trust_env=False, timeout=10.0) as client:
                 resp = client.get(url, headers={"Accept": "application/vnd.github+json"})
             if resp.status_code == 200:
@@ -155,7 +156,7 @@ class SyncManager:
                 if latest and _parse_version(latest) > _parse_version(__version__):
                     logging.warning(
                         f"⚠️ Доступна новая версия {latest} (текущая: {__version__}). "
-                        f"https://github.com/grandvan709/yookassa-to-mynalog/releases/latest"
+                        f"https://github.com/zavul0nn/yookassa-to-mynalog/releases/latest"
                     )
                     self._emit("on_update_available", latest.lstrip("vV"))
                 else:
