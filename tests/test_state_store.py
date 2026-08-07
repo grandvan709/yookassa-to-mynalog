@@ -1,16 +1,20 @@
 import json
 import logging
+import sqlite3
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import closing, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP_DIR))
 
+import state_store as state_store_module
+from db_migrations import Migration
 from state_store import ConcurrentRunError, StateStore, StateStoreError
 from state_cli import (
     list_pending_payments,
@@ -42,6 +46,84 @@ class StateStoreTests(unittest.TestCase):
         store.save(state)
 
         self.assertEqual(state, StateStore(self.db_path).load())
+
+    def test_existing_database_is_migrated_and_backed_up(self):
+        state = {"processed_payments": ["payment-1"]}
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.execute(
+                """
+                CREATE TABLE sync_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    data TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "INSERT INTO sync_state (id, data, updated_at) VALUES (1, ?, ?)",
+                (json.dumps(state), "2026-01-01T00:00:00Z"),
+            )
+            connection.commit()
+
+        store = StateStore(self.db_path)
+
+        self.assertEqual(state, store.load())
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            migrations = connection.execute(
+                "SELECT version, name FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        self.assertEqual([(1, "исходная схема SQLite")], migrations)
+        backups = list(self.root.glob("sync_state.db.pre-migration-v0-to-v1-*.bak"))
+        self.assertEqual(1, len(backups))
+        with closing(sqlite3.connect(backups[0])) as connection:
+            saved = connection.execute("SELECT data FROM sync_state WHERE id = 1").fetchone()
+        self.assertEqual(state, json.loads(saved[0]))
+
+    def test_new_database_does_not_create_pre_migration_backup(self):
+        StateStore(self.db_path)
+
+        self.assertEqual([], list(self.root.glob("*.pre-migration-*.bak")))
+
+    def test_future_column_migration_is_applied_automatically(self):
+        StateStore(self.db_path).save({"processed_payments": ["payment-1"]})
+
+        def add_source_column(connection):
+            connection.execute("ALTER TABLE sync_state ADD COLUMN source TEXT")
+
+        migrations = state_store_module.MIGRATIONS + (
+            Migration(2, "добавлен источник состояния", add_source_column),
+        )
+        with patch.object(state_store_module, "MIGRATIONS", migrations):
+            store = StateStore(self.db_path)
+
+        self.assertEqual({"processed_payments": ["payment-1"]}, store.load())
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            columns = {
+                row[1] for row in connection.execute("PRAGMA table_info(sync_state)")
+            }
+            versions = connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            ).fetchall()
+        self.assertIn("source", columns)
+        self.assertEqual([(1,), (2,)], versions)
+        self.assertEqual(
+            1,
+            len(list(self.root.glob("sync_state.db.pre-migration-v1-to-v2-*.bak"))),
+        )
+
+    def test_database_from_newer_application_is_rejected(self):
+        StateStore(self.db_path)
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            connection.execute(
+                """
+                INSERT INTO schema_migrations (version, name, applied_at)
+                VALUES (999, 'future', '2026-01-01T00:00:00Z')
+                """
+            )
+            connection.commit()
+
+        with self.assertRaisesRegex(StateStoreError, "базы новее приложения"):
+            StateStore(self.db_path)
 
     def test_legacy_json_is_imported_and_left_as_backup(self):
         state = {"processed_payments": ["payment-1"]}

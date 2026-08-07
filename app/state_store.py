@@ -4,9 +4,11 @@ import os
 import socket
 import sqlite3
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+from db_migrations import MIGRATIONS
 
 
 class StateStoreError(RuntimeError):
@@ -45,30 +47,109 @@ class StateStore:
 
     def _initialize(self):
         try:
+            database_existed = (
+                self.db_path.exists() and self.db_path.stat().st_size > 0
+            )
             with self._connection() as connection:
                 connection.execute("PRAGMA journal_mode = WAL")
-                connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS sync_state (
-                        id INTEGER PRIMARY KEY CHECK (id = 1),
-                        data TEXT NOT NULL,
-                        updated_at TEXT NOT NULL
-                    )
-                    """
-                )
-                connection.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS run_lock (
-                        id INTEGER PRIMARY KEY CHECK (id = 1),
-                        owner TEXT NOT NULL,
-                        updated_at TEXT NOT NULL
-                    )
-                    """
-                )
+                self._run_migrations(connection, database_existed)
             if os.name != "nt":
                 os.chmod(self.db_path, 0o600)
+        except StateStoreError:
+            raise
         except (OSError, sqlite3.Error) as e:
             raise StateStoreError(f"не удалось инициализировать SQLite state: {e}") from e
+
+    def _run_migrations(self, connection, database_existed):
+        known_versions = [migration.version for migration in MIGRATIONS]
+        if known_versions != list(range(1, len(MIGRATIONS) + 1)):
+            raise StateStoreError(
+                "реестр миграций SQLite должен содержать последовательные версии с 1"
+            )
+
+        applied = self._applied_migration_versions(connection)
+        known = set(known_versions)
+        unknown = applied - known
+        if unknown:
+            versions = ", ".join(str(version) for version in sorted(unknown))
+            raise StateStoreError(
+                f"версия базы новее приложения: неизвестные миграции {versions}"
+            )
+        if applied and applied != set(range(1, max(applied) + 1)):
+            raise StateStoreError("в истории миграций SQLite нарушена последовательность")
+
+        pending = [
+            migration for migration in MIGRATIONS if migration.version not in applied
+        ]
+        if not pending:
+            return
+
+        backup_path = None
+        if database_existed:
+            backup_path = self._create_pre_migration_backup(connection, applied, pending)
+
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            # Версия перечитывается после получения write lock: другой процесс мог
+            # успеть применить миграции, пока текущий ожидал SQLite.
+            applied = self._applied_migration_versions(connection)
+            for migration in MIGRATIONS:
+                if migration.version in applied:
+                    continue
+                migration.apply(connection)
+                connection.execute(
+                    """
+                    INSERT INTO schema_migrations (version, name, applied_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (migration.version, migration.name, self._now()),
+                )
+            connection.commit()
+        except Exception as e:
+            connection.rollback()
+            suffix = f" Резервная копия: {backup_path}." if backup_path else ""
+            raise StateStoreError(f"не удалось обновить схему SQLite: {e}.{suffix}") from e
+
+        versions = ", ".join(str(migration.version) for migration in pending)
+        logging.info(f"Применены миграции SQLite: {versions}")
+
+    @staticmethod
+    def _applied_migration_versions(connection):
+        exists = connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'schema_migrations'
+            """
+        ).fetchone()
+        if not exists:
+            return set()
+        return {
+            row["version"]
+            for row in connection.execute("SELECT version FROM schema_migrations")
+        }
+
+    def _create_pre_migration_backup(self, connection, applied, pending):
+        old_version = max(applied, default=0)
+        new_version = max(migration.version for migration in pending)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        backup_path = self.db_path.with_name(
+            f"{self.db_path.name}.pre-migration-v{old_version}-to-v{new_version}-{timestamp}.bak"
+        )
+        try:
+            with closing(sqlite3.connect(backup_path)) as destination:
+                connection.backup(destination)
+            if os.name != "nt":
+                os.chmod(backup_path, 0o600)
+        except (OSError, sqlite3.Error) as e:
+            try:
+                backup_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise StateStoreError(
+                f"не удалось создать резервную копию перед миграцией SQLite: {e}"
+            ) from e
+        logging.info(f"Перед миграцией SQLite создана копия: {backup_path}")
+        return backup_path
 
     def load(self):
         try:
