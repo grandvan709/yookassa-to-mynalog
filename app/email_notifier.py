@@ -157,6 +157,7 @@ class EmailNotifier:
     def _build_html(self) -> str:
         successful = len(self._payments)
         failed = len(self._errors)
+        found_count = max(self._found_count, successful + failed)
         total = sum(self._payments, Decimal("0"))
 
         date_str = self._start_time.strftime("%d.%m.%Y %H:%M") if self._start_time else "—"
@@ -206,7 +207,7 @@ class EmailNotifier:
 
         if successful or failed:
             if failed == 0:
-                status_line = f"<span style='color:#27ae60;'>✅ Успешно: <b>{successful}</b> из {self._found_count} {_plural(self._found_count, 'платежа', 'платежей', 'платежей')}</span>"
+                status_line = f"<span style='color:#27ae60;'>✅ Успешно: <b>{successful}</b> из {found_count} {_plural(found_count, 'платежа', 'платежей', 'платежей')}</span>"
             else:
                 status_line = f"<span style='color:#27ae60;'>✅ Успешно: <b>{successful}</b></span> | <span style='color:#e74c3c;'>❌ Ошибок: <b>{failed}</b></span>"
 

@@ -140,6 +140,8 @@ class SyncManager:
     def _ensure_state_fields(self, state):
         defaults = {
             "pending_payments": [],
+            "watched_payments": [],
+            "expired_unpaid_payments": [],
             "skipped_payments": [],
             "receipt_map": {},
             "processed_refunds": [],
@@ -179,6 +181,8 @@ class SyncManager:
             or (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
             "processed_payments": [],
             "pending_payments": [],
+            "watched_payments": [],
+            "expired_unpaid_payments": [],
             "skipped_payments": [],
             "receipt_map": {},
             "processed_refunds": [],
@@ -243,40 +247,188 @@ class SyncManager:
     async def get_new_yookassa_payments(self):
         new_payments = []
         last_sync = self.state.get("last_sync_time")
+        now = datetime.now(timezone.utc)
+        last_sync_time = _parse_timestamp(last_sync) or now
+        query_start = min(
+            last_sync_time,
+            now - timedelta(minutes=config.PENDING_PAYMENT_WATCH_MINUTES),
+        )
+        configured_start = _parse_timestamp(
+            config.parse_sync_start(config.SYNC_START_DATE)
+        )
+        if configured_start:
+            query_start = max(query_start, configured_start)
         pending_ids = {
             item if isinstance(item, str) else item.get("payment_id")
             for item in self.state["pending_payments"]
         }
         pending_ids.discard(None)
-        skip_ids = set(self.state["processed_payments"]) | pending_ids
+        watched_ids = {
+            item.get("payment_id")
+            for item in self.state.get("watched_payments", [])
+        }
+        expired_ids = {
+            item.get("payment_id")
+            for item in self.state.get("expired_unpaid_payments", [])
+        }
+        skip_ids = set(self.state["processed_payments"]) | pending_ids | expired_ids
 
         params = {
-            "status": "succeeded",
-            "created_at.gte": last_sync
+            "created_at.gte": query_start.isoformat().replace("+00:00", "Z"),
+            "created_at.lte": now.isoformat().replace("+00:00", "Z"),
         }
 
         try:
             res = await asyncio.wait_for(asyncio.to_thread(Payment.list, params), timeout=120)
-            for payment in res.items:
-                if payment.id not in skip_ids:
-                    new_payments.append(payment)
-
-            while res.next_cursor:
+            while True:
+                for payment in res.items:
+                    status = getattr(payment, "status", None) or "succeeded"
+                    if status == "succeeded":
+                        if payment.id in watched_ids:
+                            self._remove_watched_payment(payment.id)
+                            watched_ids.discard(payment.id)
+                            self.save_state()
+                        if payment.id not in skip_ids:
+                            new_payments.append(payment)
+                            skip_ids.add(payment.id)
+                    elif status != "canceled" and payment.id not in skip_ids:
+                        watched = self._track_unpaid_payment(payment, status)
+                        created_at = _parse_timestamp(payment.created_at)
+                        if created_at and now - created_at >= timedelta(
+                            minutes=config.PENDING_PAYMENT_WATCH_MINUTES
+                        ):
+                            self._expire_unpaid_payment(watched, payment, status)
+                            expired_ids.add(payment.id)
+                            watched_ids.discard(payment.id)
+                        else:
+                            watched_ids.add(payment.id)
+                if not res.next_cursor:
+                    break
                 params["cursor"] = res.next_cursor
                 res = await asyncio.wait_for(asyncio.to_thread(Payment.list, params), timeout=120)
-                for payment in res.items:
-                    if payment.id not in skip_ids:
-                        new_payments.append(payment)
         except asyncio.TimeoutError:
             logging.error("Таймаут получения платежей ЮKassa (>120s)")
-            return new_payments, "Таймаут API ЮКассы (>120s)"
+            return new_payments, "Таймаут API ЮКассы (>120s)", None
         except Exception as e:
             err_type = type(e).__name__
             err_text = str(e) or "нет деталей"
             logging.error(f"Ошибка ЮKassa: [{err_type}] {err_text}")
-            return new_payments, f"[{err_type}] {err_text}"
+            return new_payments, f"[{err_type}] {err_text}", None
 
-        return new_payments, None
+        scan_checkpoint = now.isoformat().replace("+00:00", "Z")
+        return new_payments, None, scan_checkpoint
+
+    def _track_unpaid_payment(self, payment, status):
+        watched = self.state.setdefault("watched_payments", [])
+        existing = next(
+            (item for item in watched if item.get("payment_id") == payment.id),
+            None,
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        if existing:
+            existing["last_seen_at"] = now
+            existing["last_status"] = status
+        else:
+            watched.append({
+                "payment_id": payment.id,
+                "created_at": payment.created_at,
+                "first_seen_at": now,
+                "last_seen_at": now,
+                "last_checked_at": None,
+                "last_status": status,
+            })
+            logging.info(
+                "Неоплаченный платёж %s добавлен под наблюдение на %s минут.",
+                payment.id,
+                config.PENDING_PAYMENT_WATCH_MINUTES,
+            )
+        self.save_state()
+        return existing or watched[-1]
+
+    def _remove_watched_payment(self, payment_id):
+        self.state["watched_payments"] = [
+            item for item in self.state.get("watched_payments", [])
+            if item.get("payment_id") != payment_id
+        ]
+
+    def _expire_unpaid_payment(self, watched, payment, status):
+        payment_id = watched["payment_id"]
+        self._remove_watched_payment(payment_id)
+        expired = self.state.setdefault("expired_unpaid_payments", [])
+        expired[:] = [
+            item for item in expired if item.get("payment_id") != payment_id
+        ]
+        expired.append({
+            "payment_id": payment_id,
+            "created_at": watched["created_at"],
+            "expired_at": datetime.now(timezone.utc).isoformat(),
+            "last_status": status,
+            "amount": str(getattr(getattr(payment, "amount", None), "value", "")),
+            "currency": getattr(getattr(payment, "amount", None), "currency", None),
+            "status": "unpaid_expired",
+        })
+        self.save_state()
+        logging.info(
+            "Неоплаченный платёж %s снят с наблюдения спустя %s минут.",
+            payment_id,
+            config.PENDING_PAYMENT_WATCH_MINUTES,
+        )
+
+    async def _resume_watched_payments(self):
+        completed_amounts = []
+        failures = 0
+        now = datetime.now(timezone.utc)
+        for watched in list(self.state.get("watched_payments", [])):
+            payment_id = watched.get("payment_id")
+            payment, error = await self.get_yookassa_payment(payment_id)
+            if error:
+                failures += 1
+                logging.warning(
+                    "Не удалось проверить неоплаченный платёж %s: %s",
+                    payment_id,
+                    error,
+                )
+                self._emit(
+                    "on_yookassa_error",
+                    f"ЮKassa (проверка платежа {payment_id}): {error}",
+                )
+                continue
+
+            status = getattr(payment, "status", None) or "pending"
+            watched["last_checked_at"] = now.isoformat()
+            watched["last_status"] = status
+            if status == "succeeded":
+                self._remove_watched_payment(payment_id)
+                self.save_state()
+                if payment_id in self.state["processed_payments"]:
+                    continue
+                workflow = self._prepare_payment_workflow(payment)
+                result, amount = await self._resume_payment_workflow(workflow)
+                if result == "completed":
+                    completed_amounts.append(amount)
+                    logging.info(
+                        "Отложенный платёж %s успешно оплачен и обработан.",
+                        payment_id,
+                    )
+                elif result == "skipped":
+                    self._emit(
+                        "on_payment_error",
+                        payment_id,
+                        f"валюта {workflow.get('currency')} не поддерживается",
+                    )
+                else:
+                    failures += 1
+                continue
+
+            created_at = _parse_timestamp(watched.get("created_at"))
+            age = now - created_at if created_at else timedelta.max
+            if status == "canceled" or age >= timedelta(
+                minutes=config.PENDING_PAYMENT_WATCH_MINUTES
+            ):
+                self._expire_unpaid_payment(watched, payment, status)
+            else:
+                self.save_state()
+        return completed_amounts, failures
 
     async def get_new_refunds(self):
         if not config.REFUNDS_ENABLED:
@@ -803,6 +955,17 @@ class SyncManager:
                 self.state["refund_event_times"].pop(refund_id, None)
             changed = True
 
+        expired_before = len(self.state.get("expired_unpaid_payments", []))
+        self.state["expired_unpaid_payments"] = [
+            item for item in self.state.get("expired_unpaid_payments", [])
+            if not (
+                (expired_at := _parse_timestamp(item.get("expired_at")))
+                and expired_at < cutoff
+            )
+        ]
+        if len(self.state["expired_unpaid_payments"]) != expired_before:
+            changed = True
+
         if changed:
             self.save_state()
             logging.info(
@@ -851,8 +1014,10 @@ class SyncManager:
 
         try:
             resumed_payments, _ = await self._resume_pending_payments()
-            for amount in resumed_payments:
-                self._emit("on_payment_success", amount)
+
+            watched_payments, watched_failures = await self._resume_watched_payments()
+            if watched_failures:
+                sync_ok = False
 
             pending = self.state.get("pending_payments", [])
             if pending:
@@ -872,7 +1037,11 @@ class SyncManager:
                     )
                     self._emit("on_pending_found", manual)
 
-            new_payments, payments_error = await self.get_new_yookassa_payments()
+            (
+                new_payments,
+                payments_error,
+                payment_scan_checkpoint,
+            ) = await self.get_new_yookassa_payments()
 
             if payments_error:
                 sync_ok = False
@@ -885,6 +1054,9 @@ class SyncManager:
             else:
                 logging.info(f"✓ Найдено новых платежей: {len(new_payments)}")
                 self._emit("on_sync_start", len(new_payments))
+
+            for amount in resumed_payments + watched_payments:
+                self._emit("on_payment_success", amount)
 
             successful = 0
             failed = 0
@@ -935,14 +1107,14 @@ class SyncManager:
                     f"Результат платежей: успешно={successful}, "
                     f"пропущено={skipped}, ошибок={failed}"
                 )
-                if not payments_error and failed == 0:
-                    self.state["last_sync_time"] = _latest_created_at(new_payments)
-                    self.save_state()
-                else:
+                if payments_error or failed:
                     logging.warning(
                         "Checkpoint платежей не обновлён: следующий запуск повторно "
                         "проверит незавершённый диапазон."
                     )
+            if payment_scan_checkpoint and not payments_error and failed == 0:
+                self.state["last_sync_time"] = payment_scan_checkpoint
+                self.save_state()
 
             resumed = await self._resume_pending_refunds()
             if resumed["adjusted"]:
@@ -1119,6 +1291,7 @@ class SyncManager:
                 DATA_DIR,
                 "ok" if sync_ok else "degraded",
                 pending_payments=len(self.state.get("pending_payments", [])),
+                watched_payments=len(self.state.get("watched_payments", [])),
                 pending_refunds=len(self.state.get("pending_refunds", [])),
             )
             await self.nalog.close()
@@ -1177,6 +1350,7 @@ def print_banner():
         ("Авторизация", config.MOY_NALOG_AUTH_METHOD),
         ("Расписание", config.CRON_SCHEDULE),
         ("Повторы ФНС", config.FNS_RETRY_SCHEDULE),
+        ("Ожидание оплаты", f"{config.PENDING_PAYMENT_WATCH_MINUTES} мин."),
         (
             "Лимит очереди",
             str(config.FNS_QUEUE_MAX_ATTEMPTS)

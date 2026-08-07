@@ -31,6 +31,13 @@ class SyncStartConfigTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "ISO 8601"):
             config.parse_sync_start("06.08.2026 15:42")
 
+    def test_pending_payment_watch_must_be_positive(self):
+        with patch.object(config, "PENDING_PAYMENT_WATCH_MINUTES", 0):
+            with self.assertRaisesRegex(
+                ValueError, "PENDING_PAYMENT_WATCH_MINUTES"
+            ):
+                config.validate_config()
+
 
 if __name__ == "__main__":
     unittest.main()

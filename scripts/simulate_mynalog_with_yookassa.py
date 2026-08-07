@@ -69,6 +69,9 @@ def create_manager(nalog, payments, refunds, payment_lookup, store):
         "last_refund_sync_time": "2020-01-01T00:00:00Z",
         "processed_payments": [],
         "pending_payments": [],
+        "watched_payments": [],
+        "expired_unpaid_payments": [],
+        "skipped_payments": [],
         "processed_refunds": [],
         "pending_refunds": [],
         "payment_balances": {},
@@ -87,7 +90,8 @@ def create_manager(nalog, payments, refunds, payment_lookup, store):
     async def get_payments():
         result = list(payments)
         payments.clear()
-        return result, None
+        checkpoint = max((item.created_at for item in result), default=None)
+        return result, None, checkpoint
 
     async def get_refunds():
         result = list(refunds)

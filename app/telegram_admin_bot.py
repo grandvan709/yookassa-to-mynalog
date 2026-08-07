@@ -335,6 +335,7 @@ class TelegramAdminBot:
         prefs = state.get("notification_preferences", {})
         report = state.get("receipt_reports", {})
         pending_payments = state.get("pending_payments", [])
+        watched_payments = state.get("watched_payments", [])
         pending_refunds = state.get("pending_refunds", [])
         ready = sum(
             1 for item in pending_payments
@@ -359,6 +360,7 @@ class TelegramAdminBot:
             f"Платежей в очереди: <b>{len(pending_payments)}</b>\n"
             f"— автоматический повтор: <b>{ready}</b>\n"
             f"— ручная проверка: <b>{manual}</b>\n"
+            f"Неоплаченных под наблюдением: <b>{len(watched_payments)}</b>\n"
             f"Возвратов в обработке: <b>{len(pending_refunds)}</b>\n"
             f"Лимит повторов: <b>{limit_text}</b>\n\n"
             f"Резервные копии: <b>{html.escape(backup_text)}</b>\n\n"

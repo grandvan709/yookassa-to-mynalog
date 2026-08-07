@@ -31,6 +31,9 @@ CRON_SCHEDULE = os.getenv("CRON_SCHEDULE", "0 */4 * * *")
 FNS_RETRY_SCHEDULE = os.getenv("FNS_RETRY_SCHEDULE", "*/5 * * * *")
 FNS_RETRY_DELAY_SECONDS = float(os.getenv("FNS_RETRY_DELAY_SECONDS", "3"))
 FNS_QUEUE_MAX_ATTEMPTS = int(os.getenv("FNS_QUEUE_MAX_ATTEMPTS", "0"))
+PENDING_PAYMENT_WATCH_MINUTES = int(
+    os.getenv("PENDING_PAYMENT_WATCH_MINUTES", "60")
+)
 REFUNDS_ENABLED = os.getenv("REFUNDS_ENABLED", "false").lower() in (
     "1", "true", "yes", "on"
 )
@@ -106,6 +109,10 @@ def validate_config():
         raise ValueError("FNS_RETRY_DELAY_SECONDS не может быть отрицательным.")
     if FNS_QUEUE_MAX_ATTEMPTS < 0:
         raise ValueError("FNS_QUEUE_MAX_ATTEMPTS не может быть отрицательным.")
+    if PENDING_PAYMENT_WATCH_MINUTES < 1:
+        raise ValueError(
+            "PENDING_PAYMENT_WATCH_MINUTES должен быть положительным числом."
+        )
     if TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES <= 0:
         raise ValueError(
             "TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES должен быть положительным."

@@ -115,6 +115,7 @@ class TelegramNotifier:
     def _build_message(self) -> str:
         successful = len(self._payments)
         failed = len(self._errors)
+        found_count = max(self._found_count, successful + failed)
         total = sum(self._payments, Decimal("0"))
 
         date_str = (
@@ -154,7 +155,7 @@ class TelegramNotifier:
         if successful or failed:
             if failed == 0:
                 lines.append(
-                    f"✅ Успешно: <b>{successful}</b> из {self._found_count} {_plural(self._found_count, 'платежа', 'платежей', 'платежей')}"
+                    f"✅ Успешно: <b>{successful}</b> из {found_count} {_plural(found_count, 'платежа', 'платежей', 'платежей')}"
                 )
             else:
                 lines.append(

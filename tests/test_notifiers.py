@@ -74,6 +74,14 @@ class PendingRefundNotificationTests(unittest.TestCase):
 
         self.assertIn("0.30 руб.", message)
 
+    def test_delayed_payment_summary_does_not_show_one_out_of_zero(self):
+        notifier = TelegramNotifier("token", "chat")
+        notifier.on_payment_success(Decimal("129.00"))
+
+        message = notifier._build_message()
+
+        self.assertIn("Успешно: <b>1</b> из 1", message)
+
 
 if __name__ == "__main__":
     unittest.main()

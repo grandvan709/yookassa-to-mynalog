@@ -2,6 +2,7 @@ import asyncio
 import logging
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +18,9 @@ from main import SyncManager
 from state_store import ConcurrentRunError
 
 
-def payment(payment_id, created_at, amount="100.00", currency="RUB"):
+def payment(
+    payment_id, created_at, amount="100.00", currency="RUB", status="succeeded"
+):
     return SimpleNamespace(
         id=payment_id,
         created_at=created_at,
@@ -26,6 +29,7 @@ def payment(payment_id, created_at, amount="100.00", currency="RUB"):
         metadata={},
         invoice_details=None,
         merchant_customer_id=None,
+        status=status,
     )
 
 
@@ -106,6 +110,8 @@ def manager_with(
         "last_refund_sync_time": "2026-01-01T00:00:00Z",
         "processed_payments": [],
         "pending_payments": [],
+        "watched_payments": [],
+        "expired_unpaid_payments": [],
         "skipped_payments": [],
         "processed_refunds": [],
         "pending_refunds": [],
@@ -125,7 +131,8 @@ def manager_with(
     manager.save_state = lambda: None
 
     async def get_payments():
-        return payments, payments_error
+        checkpoint = _latest_created_at_for_test(payments) if payments else None
+        return payments, payments_error, checkpoint
 
     async def get_refunds():
         return refunds, refunds_error
@@ -143,6 +150,10 @@ def manager_with(
     manager.get_new_refunds = get_refunds
     manager.get_yookassa_payment = get_payment
     return manager
+
+
+def _latest_created_at_for_test(items):
+    return max(item.created_at for item in items)
 
 
 class CheckpointTests(unittest.TestCase):
@@ -166,6 +177,8 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual([], state["pending_refunds"])
         self.assertEqual({}, state["payment_balances"])
         self.assertEqual([], state["skipped_payments"])
+        self.assertEqual([], state["watched_payments"])
+        self.assertEqual([], state["expired_unpaid_payments"])
 
     def test_pending_refund_is_not_returned_for_processing_again(self):
         manager = SyncManager.__new__(SyncManager)
@@ -214,10 +227,13 @@ class CheckpointTests(unittest.TestCase):
         )
 
         with patch("main.Payment.list", return_value=response):
-            payments, error = asyncio.run(manager.get_new_yookassa_payments())
+            payments, error, checkpoint = asyncio.run(
+                manager.get_new_yookassa_payments()
+            )
 
         self.assertIsNone(error)
         self.assertEqual(["payment-new"], [item.id for item in payments])
+        self.assertGreater(checkpoint, "2026-01-03T00:00:00Z")
 
     def test_payment_query_uses_exact_inclusive_start_timestamp(self):
         manager = SyncManager.__new__(SyncManager)
@@ -236,6 +252,86 @@ class CheckpointTests(unittest.TestCase):
             "2026-08-06T12:42:30Z",
             params["created_at.gte"],
         )
+        self.assertNotIn("status", params)
+        self.assertIn("created_at.lte", params)
+
+    def test_late_succeeded_payment_is_processed_from_watch_list(self):
+        now = datetime.now(timezone.utc)
+        pending_created = (now - timedelta(minutes=40)).isoformat().replace(
+            "+00:00", "Z"
+        )
+        newer_created = (now - timedelta(minutes=20)).isoformat().replace(
+            "+00:00", "Z"
+        )
+        scan_start = (now - timedelta(minutes=50)).isoformat().replace(
+            "+00:00", "Z"
+        )
+        pending = payment(
+            "late-payment", pending_created, status="pending"
+        )
+        newer = payment("newer-payment", newer_created)
+        response = SimpleNamespace(items=[newer, pending], next_cursor=None)
+        manager = manager_with([], [], FakeNalog())
+        manager.state["last_sync_time"] = scan_start
+        manager.get_new_yookassa_payments = (
+            SyncManager.get_new_yookassa_payments.__get__(manager)
+        )
+
+        with patch("main.Payment.list", return_value=response), patch(
+            "main.write_status"
+        ), patch.object(config, "SYNC_START_DATE", scan_start):
+            asyncio.run(manager.sync())
+
+        self.assertEqual(["late-payment"], [
+            item["payment_id"] for item in manager.state["watched_payments"]
+        ])
+        self.assertIn("newer-payment", manager.state["processed_payments"])
+        self.assertGreater(
+            manager.state["last_sync_time"], newer_created
+        )
+
+        paid_later = payment("late-payment", pending_created)
+        manager.get_yookassa_payment = AsyncMock(return_value=(paid_later, None))
+        empty_response = SimpleNamespace(items=[], next_cursor=None)
+        with patch("main.Payment.list", return_value=empty_response), patch(
+            "main.write_status"
+        ), patch.object(config, "SYNC_START_DATE", scan_start):
+            asyncio.run(manager.sync())
+
+        self.assertEqual([], manager.state["watched_payments"])
+        self.assertIn("late-payment", manager.state["processed_payments"])
+        self.assertEqual(
+            ["newer-payment", "late-payment"],
+            [call[0] for call in manager.nalog.add_calls],
+        )
+
+    def test_unpaid_payment_expires_locally_after_last_status_check(self):
+        manager = manager_with([], [], FakeNalog())
+        manager.state["watched_payments"] = [{
+            "payment_id": "never-paid",
+            "created_at": "2026-01-01T00:00:00Z",
+            "first_seen_at": "2026-01-01T00:00:00Z",
+            "last_seen_at": "2026-01-01T00:00:00Z",
+            "last_checked_at": None,
+            "last_status": "pending",
+        }]
+        still_pending = payment(
+            "never-paid", "2026-01-01T00:00:00Z", status="pending"
+        )
+        manager.get_yookassa_payment = AsyncMock(
+            return_value=(still_pending, None)
+        )
+
+        completed, failures = asyncio.run(manager._resume_watched_payments())
+
+        self.assertEqual([], completed)
+        self.assertEqual(0, failures)
+        self.assertEqual([], manager.state["watched_payments"])
+        self.assertEqual(
+            "unpaid_expired",
+            manager.state["expired_unpaid_payments"][0]["status"],
+        )
+        manager.get_yookassa_payment.assert_awaited_once_with("never-paid")
 
     def test_payment_failure_keeps_old_checkpoint(self):
         payments = [
