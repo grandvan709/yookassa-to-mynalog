@@ -560,6 +560,18 @@ class SyncManager:
             write_retryable = False
             write_error = self.nalog.last_error
 
+        # Если чек точно не мог быть создан (не прошла авторизация, не установлено
+        # соединение или ФНС явно отклонила запрос), сверка через find_income лишь
+        # повторно авторизуется и создаёт лишнюю нагрузку на ФНС.
+        if not write_uncertain:
+            return self._defer_payment_workflow(
+                workflow,
+                write_error,
+                write_retryable,
+                uncertain=False,
+                queue_attempt=queue_attempt,
+            )
+
         receipt_uuid = await self.nalog.find_income(
             workflow["description"],
             amount,
@@ -569,13 +581,22 @@ class SyncManager:
             self._complete_payment_workflow(workflow, receipt_uuid)
             return "completed", amount
 
-        workflow["error"] = write_error or self.nalog.last_error
-        workflow["last_error_retryable"] = bool(
-            write_retryable or getattr(self.nalog, "last_error_retryable", False)
+        return self._defer_payment_workflow(
+            workflow,
+            write_error or self.nalog.last_error,
+            write_retryable or getattr(self.nalog, "last_error_retryable", False),
+            uncertain=True,
+            queue_attempt=queue_attempt,
         )
-        if write_uncertain:
+
+    def _defer_payment_workflow(
+        self, workflow, error, retryable, *, uncertain, queue_attempt
+    ):
+        workflow["error"] = error
+        workflow["last_error_retryable"] = bool(retryable)
+        if uncertain:
             workflow["status"] = "unknown"
-        elif write_retryable:
+        elif retryable:
             workflow["status"] = "ready"
         else:
             workflow["status"] = "rejected"

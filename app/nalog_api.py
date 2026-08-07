@@ -163,7 +163,6 @@ class MoyNalogAPI:
             response = await self.client.post(url, json=payload)
             if response.status_code != 200:
                 self._record_http_error(response)
-                logging.error(f"Ошибка авторизации: {self.last_error}")
                 error_type = (
                     TransientNalogError
                     if self.last_error_retryable
@@ -188,7 +187,7 @@ class MoyNalogAPI:
         except Exception as e:
             if self.last_error is None:
                 self._record_exception(e)
-            logging.error(f"Ошибка авторизации в Мой Налог: {e}")
+            logging.warning(f"Неудачная попытка авторизации в Мой Налог: {e}")
             raise
 
     @retry(
@@ -215,7 +214,6 @@ class MoyNalogAPI:
             response = await self.client.post(url, json=payload)
             if response.status_code != 200:
                 self._record_http_error(response)
-                logging.error(f"Ошибка авторизации по refresh token: {self.last_error}")
                 error_type = (
                     TransientNalogError
                     if self.last_error_retryable
@@ -247,7 +245,9 @@ class MoyNalogAPI:
         except Exception as e:
             if self.last_error is None:
                 self._record_exception(e)
-            logging.error(f"Ошибка авторизации в Мой Налог по refresh token: {e}")
+            logging.warning(
+                f"Неудачная попытка авторизации в Мой Налог по refresh token: {e}"
+            )
             raise
 
     async def add_income(self, name, amount, date):

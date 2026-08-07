@@ -61,6 +61,7 @@ class FakeNalog:
         self.last_operation_uncertain = True
         self.cancel_calls = []
         self.add_calls = []
+        self.find_calls = []
 
     async def add_income(self, description, amount, payment_date):
         self.add_calls.append((description, Decimal(str(amount)), payment_date))
@@ -71,6 +72,7 @@ class FakeNalog:
         return f"receipt-{description}"
 
     async def find_income(self, description, amount, operation_date=None):
+        self.find_calls.append((description, Decimal(str(amount)), operation_date))
         return self.found_receipts.get(description)
 
     async def get_income_status(self, receipt_uuid, operation_date=None):
@@ -401,6 +403,7 @@ class CheckpointTests(unittest.TestCase):
 
         asyncio.run(manager.sync())
         self.assertEqual("ready", manager.state["pending_payments"][0]["status"])
+        self.assertEqual([], nalog.find_calls)
         first_call_count = len(nalog.add_calls)
 
         payments.clear()
@@ -408,6 +411,7 @@ class CheckpointTests(unittest.TestCase):
 
         self.assertGreater(len(nalog.add_calls), first_call_count)
         self.assertEqual("ready", manager.state["pending_payments"][0]["status"])
+        self.assertEqual([], nalog.find_calls)
 
     def test_retry_queue_stops_batch_while_fns_is_unavailable(self):
         nalog = FakeNalog(failed_payment_ids={"first", "second"})
