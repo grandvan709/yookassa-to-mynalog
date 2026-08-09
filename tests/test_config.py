@@ -38,6 +38,23 @@ class SyncStartConfigTests(unittest.TestCase):
             ):
                 config.validate_config()
 
+    def test_customer_receipts_require_bedolaga_bot_token(self):
+        with patch.multiple(
+            config,
+            TELEGRAM_CUSTOMER_RECEIPTS_ENABLED=True,
+            TELEGRAM_CUSTOMER_BOT_TOKEN=None,
+            MOY_NALOG_RECEIPT_INN="123456789012",
+            YOOKASSA_SHOP_ID="shop",
+            YOOKASSA_API_KEY="key",
+            MOY_NALOG_AUTH_METHOD="password",
+            MOY_NALOG_LOGIN="123456789012",
+            MOY_NALOG_PASSWORD="password",
+        ):
+            with self.assertRaisesRegex(
+                ValueError, "TELEGRAM_CUSTOMER_BOT_TOKEN"
+            ):
+                config.validate_config()
+
 
 if __name__ == "__main__":
     unittest.main()

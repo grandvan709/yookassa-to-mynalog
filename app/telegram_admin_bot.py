@@ -337,6 +337,14 @@ class TelegramAdminBot:
         pending_payments = state.get("pending_payments", [])
         watched_payments = state.get("watched_payments", [])
         pending_refunds = state.get("pending_refunds", [])
+        receipt_deliveries = state.get("receipt_deliveries", [])
+        pending_deliveries = sum(
+            1 for item in receipt_deliveries if item.get("status") == "pending"
+        )
+        failed_deliveries = sum(
+            1 for item in receipt_deliveries
+            if item.get("status") == "undeliverable"
+        )
         ready = sum(
             1 for item in pending_payments
             if isinstance(item, dict) and item.get("status") == "ready"
@@ -362,6 +370,8 @@ class TelegramAdminBot:
             f"— ручная проверка: <b>{manual}</b>\n"
             f"Неоплаченных под наблюдением: <b>{len(watched_payments)}</b>\n"
             f"Возвратов в обработке: <b>{len(pending_refunds)}</b>\n"
+            f"Чеков ожидают доставки клиентам: <b>{pending_deliveries}</b>\n"
+            f"Чеков не удалось доставить: <b>{failed_deliveries}</b>\n"
             f"Лимит повторов: <b>{limit_text}</b>\n\n"
             f"Резервные копии: <b>{html.escape(backup_text)}</b>\n\n"
             "Отчёты об успешных чеках: "

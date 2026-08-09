@@ -62,6 +62,14 @@ TELEGRAM_ADMIN_BOT_ENABLED = os.getenv(
 TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES = float(
     os.getenv("TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES", "5")
 )
+TELEGRAM_CUSTOMER_RECEIPTS_ENABLED = os.getenv(
+    "TELEGRAM_CUSTOMER_RECEIPTS_ENABLED", "false"
+).lower() in ("1", "true", "yes", "on")
+TELEGRAM_CUSTOMER_BOT_TOKEN = os.getenv("TELEGRAM_CUSTOMER_BOT_TOKEN")
+MOY_NALOG_RECEIPT_INN = os.getenv("MOY_NALOG_RECEIPT_INN") or MOY_NALOG_LOGIN
+TELEGRAM_CUSTOMER_RECEIPT_MAX_MB = float(
+    os.getenv("TELEGRAM_CUSTOMER_RECEIPT_MAX_MB", "10")
+)
 
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -117,6 +125,10 @@ def validate_config():
         raise ValueError(
             "TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES должен быть положительным."
         )
+    if TELEGRAM_CUSTOMER_RECEIPT_MAX_MB <= 0:
+        raise ValueError(
+            "TELEGRAM_CUSTOMER_RECEIPT_MAX_MB должен быть положительным."
+        )
     if STATE_RETENTION_DAYS < 1:
         raise ValueError("STATE_RETENTION_DAYS должен быть положительным числом.")
     if HEALTH_MAX_AGE_HOURS <= 0:
@@ -160,6 +172,21 @@ def validate_config():
             "Для TELEGRAM_ADMIN_BOT_ENABLED=true задайте TELEGRAM_BOT_TOKEN, "
             "TELEGRAM_CHAT_ID и TELEGRAM_ADMIN_USER_ID."
         )
+    if TELEGRAM_CUSTOMER_RECEIPTS_ENABLED:
+        customer_missing = []
+        if not TELEGRAM_CUSTOMER_BOT_TOKEN:
+            customer_missing.append("TELEGRAM_CUSTOMER_BOT_TOKEN")
+        if not MOY_NALOG_RECEIPT_INN:
+            customer_missing.append("MOY_NALOG_RECEIPT_INN")
+        if customer_missing:
+            raise ValueError(
+                "Для отправки чеков покупателям отсутствуют: "
+                + ", ".join(customer_missing)
+            )
+        if not str(MOY_NALOG_RECEIPT_INN).isdigit() or len(
+            str(MOY_NALOG_RECEIPT_INN)
+        ) not in (10, 12):
+            raise ValueError("MOY_NALOG_RECEIPT_INN должен содержать 10 или 12 цифр.")
     if BACKUP_TARGET == "telegram" and not (
         TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
     ):

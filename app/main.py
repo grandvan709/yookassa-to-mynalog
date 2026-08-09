@@ -15,6 +15,10 @@ from email_notifier import EmailNotifier
 from utils import build_template_vars
 from state_store import ConcurrentRunError, StateStore
 from health_state import write_status
+from customer_receipt_delivery import (
+    CustomerReceiptDelivery,
+    extract_telegram_user_id,
+)
 
 LOG_DIR = os.getenv("LOG_DIR", "logs")
 DATA_DIR = os.getenv("DATA_DIR", "data")
@@ -46,6 +50,16 @@ class SyncManager:
             refresh_token=refresh_token,
             on_refresh_token=self._save_refresh_token,
         )
+        if config.TELEGRAM_CUSTOMER_RECEIPTS_ENABLED:
+            self.customer_receipt_delivery = CustomerReceiptDelivery(
+                config.TELEGRAM_CUSTOMER_BOT_TOKEN,
+                config.MOY_NALOG_RECEIPT_INN,
+                telegram_proxy=config.TELEGRAM_PROXY,
+                nalog_proxy=config.YOOKASSA_NALOG_PROXY,
+                max_bytes=int(config.TELEGRAM_CUSTOMER_RECEIPT_MAX_MB * 1024 * 1024),
+            )
+        else:
+            self.customer_receipt_delivery = None
 
         if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
             thread_id = None
@@ -144,6 +158,7 @@ class SyncManager:
             "expired_unpaid_payments": [],
             "skipped_payments": [],
             "receipt_map": {},
+            "receipt_deliveries": [],
             "processed_refunds": [],
             "pending_refunds": [],
             "payment_balances": {},
@@ -185,6 +200,7 @@ class SyncManager:
             "expired_unpaid_payments": [],
             "skipped_payments": [],
             "receipt_map": {},
+            "receipt_deliveries": [],
             "processed_refunds": [],
             "pending_refunds": [],
             "payment_balances": {},
@@ -496,6 +512,8 @@ class SyncManager:
             "currency": currency,
             "created_at": payment.created_at,
             "description": description,
+            "payment_description": payment.description or "",
+            "telegram_user_id": extract_telegram_user_id(payment.description),
             "status": "ready" if currency == "RUB" else "unsupported_currency",
             "attempts": 0,
             "queue_attempts": 0,
@@ -630,7 +648,89 @@ class SyncManager:
                 else item.get("payment_id") != payment_id
             )
         ]
+        self._enqueue_customer_receipt(workflow, receipt_uuid)
         self.save_state()
+
+    def _enqueue_customer_receipt(self, workflow, receipt_uuid):
+        if not getattr(self, "customer_receipt_delivery", None):
+            return
+        telegram_user_id = workflow.get("telegram_user_id")
+        if not telegram_user_id:
+            telegram_user_id = extract_telegram_user_id(
+                workflow.get("payment_description") or workflow.get("description")
+            )
+        if not telegram_user_id:
+            logging.warning(
+                "Платёж %s зарегистрирован, но Telegram ID не найден в описании.",
+                workflow.get("payment_id", "unknown"),
+            )
+            return
+
+        deliveries = self.state.setdefault("receipt_deliveries", [])
+        if any(item.get("receipt_uuid") == receipt_uuid for item in deliveries):
+            return
+        deliveries.append({
+            "payment_id": workflow.get("payment_id"),
+            "receipt_uuid": receipt_uuid,
+            "telegram_user_id": telegram_user_id,
+            "amount": workflow.get("amount"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+            "attempts": 0,
+            "link_sent": False,
+        })
+
+    async def _process_customer_receipt_deliveries(self):
+        delivery = getattr(self, "customer_receipt_delivery", None)
+        if not delivery:
+            return {"delivered": 0, "pending": 0, "undeliverable": 0}
+
+        counts = {"delivered": 0, "pending": 0, "undeliverable": 0}
+        for job in self.state.setdefault("receipt_deliveries", []):
+            if job.get("status") != "pending":
+                continue
+            job["attempts"] = int(job.get("attempts", 0)) + 1
+            job["last_attempt_at"] = datetime.now(timezone.utc).isoformat()
+            try:
+                result = await delivery.deliver(job)
+            except Exception as exc:
+                result = None
+                job["last_error"] = f"[{type(exc).__name__}] {str(exc)[:200]}"
+
+            if result and result.status == "delivered":
+                job["status"] = "delivered"
+                job["delivered_at"] = datetime.now(timezone.utc).isoformat()
+                job.pop("last_error", None)
+                counts["delivered"] += 1
+            elif result and result.status == "undeliverable":
+                job["status"] = "undeliverable"
+                job["last_error"] = result.error
+                job["failed_at"] = datetime.now(timezone.utc).isoformat()
+                counts["undeliverable"] += 1
+                logging.error(
+                    "Чек %s нельзя доставить пользователю Telegram %s: %s",
+                    job.get("receipt_uuid"),
+                    job.get("telegram_user_id"),
+                    result.error,
+                )
+            else:
+                if result:
+                    job["last_error"] = result.error
+                    job["link_sent"] = bool(
+                        job.get("link_sent") or result.link_sent
+                    )
+                counts["pending"] += 1
+            self.save_state()
+
+        if any(counts.values()):
+            logging.info(
+                "Доставка чеков покупателям: отправлено=%s, ожидает=%s, "
+                "недоставимо=%s",
+                counts["delivered"],
+                counts["pending"],
+                counts["undeliverable"],
+            )
+        return counts
 
     def _complete_skipped_payment_workflow(self, workflow, reason):
         payment_id = workflow["payment_id"]
@@ -729,6 +829,7 @@ class SyncManager:
                 stop_on_unavailable=True,
                 delay_seconds=config.FNS_RETRY_DELAY_SECONDS,
             )
+            await self._process_customer_receipt_deliveries()
             for amount in completed:
                 self._emit("on_payment_success", amount)
             remaining = len(self.state.get("pending_payments", []))
@@ -954,6 +1055,13 @@ class SyncManager:
             self.state["skipped_payments"] = [
                 item for item in self.state.get("skipped_payments", [])
                 if item.get("payment_id") not in removable_payments
+            ]
+            self.state["receipt_deliveries"] = [
+                item for item in self.state.get("receipt_deliveries", [])
+                if (
+                    item.get("payment_id") not in removable_payments
+                    or item.get("status") == "pending"
+                )
             ]
             changed = True
 
@@ -1304,6 +1412,13 @@ class SyncManager:
             logging.error(f"Критическая ошибка при синхронизации: {e}", exc_info=True)
         finally:
             try:
+                delivery_counts = await self._process_customer_receipt_deliveries()
+                if delivery_counts["pending"] or delivery_counts["undeliverable"]:
+                    sync_ok = False
+            except Exception as e:
+                sync_ok = False
+                logging.error(f"Не удалось обработать доставку чеков: {e}")
+            try:
                 self._prune_processed_history()
             except Exception as e:
                 sync_ok = False
@@ -1314,6 +1429,14 @@ class SyncManager:
                 pending_payments=len(self.state.get("pending_payments", [])),
                 watched_payments=len(self.state.get("watched_payments", [])),
                 pending_refunds=len(self.state.get("pending_refunds", [])),
+                pending_receipt_deliveries=sum(
+                    1 for item in self.state.get("receipt_deliveries", [])
+                    if item.get("status") == "pending"
+                ),
+                undeliverable_receipts=sum(
+                    1 for item in self.state.get("receipt_deliveries", [])
+                    if item.get("status") == "undeliverable"
+                ),
             )
             await self.nalog.close()
             if self.notifier:
@@ -1365,6 +1488,11 @@ def print_banner():
     email_on = bool(config.SMTP_HOST and config.SMTP_USER and config.SMTP_PASSWORD and config.SMTP_TO_EMAIL)
     telegram_status = colorize("✓ включён", "green") if telegram_on else colorize("· выключен", "gray")
     email_status = colorize("✓ включён", "green") if email_on else colorize("· выключен", "gray")
+    customer_receipts_status = (
+        colorize("✓ включена", "green")
+        if config.TELEGRAM_CUSTOMER_RECEIPTS_ENABLED
+        else colorize("· выключена", "gray")
+    )
 
     rows = [
         ("Часовой пояс", config.TZ or "—"),
@@ -1379,6 +1507,7 @@ def print_banner():
             else "без ограничений",
         ),
         ("Telegram", telegram_status),
+        ("Доставка чеков", customer_receipts_status),
         ("Email", email_status),
     ]
 

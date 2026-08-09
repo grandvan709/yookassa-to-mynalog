@@ -15,6 +15,7 @@ sys.path.insert(0, str(APP_DIR))
 import config
 import main as main_module
 from main import SyncManager
+from customer_receipt_delivery import DeliveryResult
 from state_store import ConcurrentRunError
 
 
@@ -181,6 +182,7 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual([], state["skipped_payments"])
         self.assertEqual([], state["watched_payments"])
         self.assertEqual([], state["expired_unpaid_payments"])
+        self.assertEqual([], state["receipt_deliveries"])
 
     def test_pending_refund_is_not_returned_for_processing_again(self):
         manager = SyncManager.__new__(SyncManager)
@@ -586,6 +588,33 @@ class CheckpointTests(unittest.TestCase):
         asyncio.run(manager.sync())
 
         self.assertIn("payment-unique", nalog.add_calls[0][0])
+
+    def test_successful_payment_queues_and_delivers_receipt_to_customer(self):
+        nalog = FakeNalog()
+        manager = manager_with([], [], nalog)
+        manager.customer_receipt_delivery = SimpleNamespace(
+            deliver=AsyncMock(return_value=DeliveryResult("delivered"))
+        )
+        source = payment(
+            "payment-customer",
+            "2026-01-02T00:00:00Z",
+            amount="349.00",
+        )
+        source.description = (
+            "Интернет-сервис - Пополнение на 349 ₽ (ID 1929069704)"
+        )
+        workflow = manager._prepare_payment_workflow(source)
+
+        result, amount = asyncio.run(manager._resume_payment_workflow(workflow))
+        counts = asyncio.run(manager._process_customer_receipt_deliveries())
+
+        self.assertEqual("completed", result)
+        self.assertEqual(Decimal("349.00"), amount)
+        self.assertEqual(1, counts["delivered"])
+        delivery = manager.state["receipt_deliveries"][0]
+        self.assertEqual(1929069704, delivery["telegram_user_id"])
+        self.assertEqual("delivered", delivery["status"])
+        manager.customer_receipt_delivery.deliver.assert_awaited_once()
 
     def test_non_rub_payment_is_skipped_without_blocking_checkpoint(self):
         foreign_payment = payment(
