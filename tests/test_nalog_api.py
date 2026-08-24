@@ -17,12 +17,18 @@ from nalog_api import MoyNalogAPI
 
 
 class FakeResponse:
-    def __init__(self, status_code=200, payload=None, content_type="application/json"):
+    def __init__(
+        self,
+        status_code=200,
+        payload=None,
+        content_type="application/json",
+        text="",
+    ):
         self.status_code = status_code
         self.payload = payload if payload is not None else {
             "approvedReceiptUuid": "receipt-1"
         }
-        self.text = ""
+        self.text = text
         self.headers = {"content-type": content_type}
 
     def json(self):
@@ -60,9 +66,11 @@ class PagedFakeClient(FakeClient):
 
 
 class AuthFakeClient:
-    def __init__(self, outcome):
+    def __init__(self, outcome, lkfl_outcome=None):
         self.outcome = outcome
+        self.lkfl_outcome = lkfl_outcome or FakeResponse(200)
         self.calls = 0
+        self.lkfl_calls = 0
         self.headers = {}
 
     async def post(self, url, json):
@@ -70,6 +78,12 @@ class AuthFakeClient:
         if isinstance(self.outcome, Exception):
             raise self.outcome
         return self.outcome
+
+    async def get(self, url, follow_redirects=False):
+        self.lkfl_calls += 1
+        if isinstance(self.lkfl_outcome, Exception):
+            raise self.lkfl_outcome
+        return self.lkfl_outcome
 
 class NalogMoneyTests(unittest.TestCase):
     def setUp(self):
@@ -256,6 +270,33 @@ class NalogMoneyTests(unittest.TestCase):
                 asyncio.run(api._authenticate_password())
         self.assertEqual(3, api.client.calls)
         self.assertEqual("maintenance", api.last_error_kind)
+        self.assertTrue(api.last_error_retryable)
+
+    def test_lkfl_maintenance_stops_before_auth_request(self):
+        api = self.create_auth_api(FakeResponse(200, {"token": "unused"}))
+        api.client.lkfl_outcome = FakeResponse(
+            503,
+            content_type="text/html",
+            text="Сервис временно недоступен по причине технических работ",
+        )
+
+        with self.assertRaisesRegex(Exception, "ЛК ФЛ находится на техработах"):
+            asyncio.run(api._authenticate_password())
+
+        self.assertEqual(1, api.client.lkfl_calls)
+        self.assertEqual(0, api.client.calls)
+        self.assertEqual("lkfl_maintenance", api.last_error_kind)
+        self.assertTrue(api.last_error_retryable)
+        self.assertFalse(api.last_operation_uncertain)
+
+    def test_auth_not_found_is_treated_as_temporary_lkfl_maintenance(self):
+        api = self.create_auth_api(FakeResponse(404, {"message": "Не найдено"}))
+
+        with self.assertRaisesRegex(Exception, "ЛК ФЛ находится на техработах"):
+            asyncio.run(api._authenticate_password())
+
+        self.assertEqual(1, api.client.calls)
+        self.assertEqual("lkfl_maintenance", api.last_error_kind)
         self.assertTrue(api.last_error_retryable)
 
 

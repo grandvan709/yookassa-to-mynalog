@@ -15,7 +15,17 @@ class PermanentNalogError(RuntimeError):
     pass
 
 
+class LkflMaintenanceError(RuntimeError):
+    """ЛК физлица недоступен; не повторять вход несколько раз в одном цикле."""
+
+
 AUTH_RETRY = retry_if_exception_type((httpx.RequestError, TransientNalogError))
+LKFL_URL = "https://lkfl2.nalog.ru/lkfl/"
+LKFL_MAINTENANCE_MARKERS = (
+    "технических работ",
+    "сервис временно недоступен",
+    "/maintm/",
+)
 
 
 class MoyNalogAPI:
@@ -102,6 +112,38 @@ class MoyNalogAPI:
             status == 408 or status >= 500
         )
 
+    def _record_lkfl_maintenance(self, status=None):
+        suffix = f" (HTTP {status})" if status else ""
+        self.last_error = (
+            "Вход по ИНН и паролю временно недоступен: "
+            f"ЛК ФЛ находится на техработах{suffix}"
+        )
+        self.last_error_kind = "lkfl_maintenance"
+        self.last_error_retryable = True
+        self.last_operation_uncertain = False
+
+    async def _ensure_lkfl_available(self):
+        """Не обращаться к авторизации НПД, когда обслуживающий её ЛК ФЛ закрыт."""
+        try:
+            response = await self.client.get(LKFL_URL, follow_redirects=True)
+        except httpx.RequestError as exc:
+            # Недоступность диагностической страницы ещё не означает, что вход
+            # через API сломан. В этом случае ориентируемся на ответ самого API.
+            logging.warning(
+                "Не удалось проверить доступность ЛК ФЛ (%s); "
+                "пробуем авторизацию через API.",
+                type(exc).__name__,
+            )
+            return
+
+        body = (getattr(response, "text", "") or "").casefold()
+        maintenance_page = any(
+            marker in body for marker in LKFL_MAINTENANCE_MARKERS
+        )
+        if response.status_code >= 500 or maintenance_page:
+            self._record_lkfl_maintenance(response.status_code)
+            raise LkflMaintenanceError(self.last_error)
+
     def _record_exception(self, exc, *, write_attempted=False):
         if isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout)):
             kind = "connect_timeout"
@@ -145,6 +187,7 @@ class MoyNalogAPI:
         reraise=True,
     )
     async def _authenticate_password(self):
+        await self._ensure_lkfl_available()
         url = "https://lknpd.nalog.ru/api/v1/auth/lkfl"
         payload = {
             "username": self.login,
@@ -163,6 +206,13 @@ class MoyNalogAPI:
             response = await self.client.post(url, json=payload)
             if response.status_code != 200:
                 self._record_http_error(response)
+                if (
+                    response.status_code == 404
+                    and (self.last_error or "").strip().casefold()
+                    in {"не найдено", "not found"}
+                ):
+                    self._record_lkfl_maintenance(response.status_code)
+                    raise LkflMaintenanceError(self.last_error)
                 error_type = (
                     TransientNalogError
                     if self.last_error_retryable

@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from datetime import date, datetime, time as datetime_time, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -27,6 +28,7 @@ if YOOKASSA_NALOG_PROXY:
 DEVICE_ID = os.getenv("DEVICE_ID")
 SYNC_START_DATE = os.getenv("SYNC_START_DATE")
 INCOME_DESCRIPTION_TEMPLATE = os.getenv("INCOME_DESCRIPTION_TEMPLATE", "Платеж #{description}")
+PAYMENT_ID_PREFIX = os.getenv("PAYMENT_ID_PREFIX", "yookassa").strip()
 CRON_SCHEDULE = os.getenv("CRON_SCHEDULE", "0 */4 * * *")
 FNS_RETRY_SCHEDULE = os.getenv("FNS_RETRY_SCHEDULE", "*/5 * * * *")
 FNS_RETRY_DELAY_SECONDS = float(os.getenv("FNS_RETRY_DELAY_SECONDS", "3"))
@@ -113,6 +115,11 @@ def parse_sync_start(value):
 
 def validate_config():
     parse_sync_start(SYNC_START_DATE)
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,32}", PAYMENT_ID_PREFIX):
+        raise ValueError(
+            "PAYMENT_ID_PREFIX должен содержать от 1 до 32 латинских букв, "
+            "цифр или символов '.', '_' и '-'."
+        )
     if FNS_RETRY_DELAY_SECONDS < 0:
         raise ValueError("FNS_RETRY_DELAY_SECONDS не может быть отрицательным.")
     if FNS_QUEUE_MAX_ATTEMPTS < 0:

@@ -162,13 +162,16 @@ def _latest_created_at_for_test(items):
 class CheckpointTests(unittest.TestCase):
     def setUp(self):
         self.original_template = config.INCOME_DESCRIPTION_TEMPLATE
+        self.original_payment_id_prefix = config.PAYMENT_ID_PREFIX
         self.original_refunds_enabled = config.REFUNDS_ENABLED
         config.INCOME_DESCRIPTION_TEMPLATE = "{id}"
+        config.PAYMENT_ID_PREFIX = "yookassa"
         config.REFUNDS_ENABLED = True
         logging.disable(logging.CRITICAL)
 
     def tearDown(self):
         config.INCOME_DESCRIPTION_TEMPLATE = self.original_template
+        config.PAYMENT_ID_PREFIX = self.original_payment_id_prefix
         config.REFUNDS_ENABLED = self.original_refunds_enabled
         logging.disable(logging.NOTSET)
 
@@ -183,6 +186,24 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual([], state["watched_payments"])
         self.assertEqual([], state["expired_unpaid_payments"])
         self.assertEqual([], state["receipt_deliveries"])
+
+    def test_legacy_not_found_rejection_returns_to_retry_queue(self):
+        manager = SyncManager.__new__(SyncManager)
+        state = {
+            "pending_payments": [{
+                "payment_id": "payment-1",
+                "status": "rejected",
+                "error": "Не найдено",
+                "last_notified_error": "rejected:Не найдено",
+            }],
+        }
+
+        migrated = manager._ensure_state_fields(state)
+
+        workflow = migrated["pending_payments"][0]
+        self.assertEqual("ready", workflow["status"])
+        self.assertTrue(workflow["last_error_retryable"])
+        self.assertNotIn("last_notified_error", workflow)
 
     def test_pending_refund_is_not_returned_for_processing_again(self):
         manager = SyncManager.__new__(SyncManager)
@@ -588,6 +609,20 @@ class CheckpointTests(unittest.TestCase):
         asyncio.run(manager.sync())
 
         self.assertIn("payment-unique", nalog.add_calls[0][0])
+
+    def test_payment_id_prefix_is_configurable(self):
+        config.INCOME_DESCRIPTION_TEMPLATE = "Оплата услуг"
+        config.PAYMENT_ID_PREFIX = "payment"
+        manager = manager_with([], [], FakeNalog())
+
+        workflow = manager._prepare_payment_workflow(
+            payment("payment-unique", "2026-01-02T00:00:00Z")
+        )
+
+        self.assertEqual(
+            "Оплата услуг [payment:payment-unique]",
+            workflow["description"],
+        )
 
     def test_successful_payment_queues_and_delivers_receipt_to_customer(self):
         nalog = FakeNalog()

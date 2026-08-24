@@ -182,6 +182,29 @@ class SyncManager:
         for key, default in defaults.items():
             if key not in state:
                 state[key] = default
+
+        # Старые версии принимали ответ авторизации "Не найдено" во время
+        # техработ ЛК ФЛ за постоянный отказ. Возвращаем только такие записи в
+        # очередь; остальные rejected по-прежнему требуют ручной проверки.
+        restored = 0
+        for workflow in state.get("pending_payments", []):
+            if not isinstance(workflow, dict):
+                continue
+            error = str(workflow.get("error") or "").strip().casefold()
+            if workflow.get("status") == "rejected" and error in {
+                "не найдено",
+                "not found",
+            }:
+                workflow["status"] = "ready"
+                workflow["last_error_retryable"] = True
+                workflow.pop("last_notified_error", None)
+                restored += 1
+        if restored:
+            logging.warning(
+                "Возвращено в очередь после ложного rejected при техработах "
+                "ЛК ФЛ: %s.",
+                restored,
+            )
         return state
 
     def load_state(self):
@@ -504,7 +527,9 @@ class SyncManager:
             build_template_vars(payment)
         )
         if payment.id not in description:
-            description = f"{description} [yookassa:{payment.id}]"
+            description = (
+                f"{description} [{config.PAYMENT_ID_PREFIX}:{payment.id}]"
+            )
 
         workflow = {
             "payment_id": payment.id,

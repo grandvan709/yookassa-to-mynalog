@@ -38,6 +38,11 @@ class SyncStartConfigTests(unittest.TestCase):
             ):
                 config.validate_config()
 
+    def test_payment_id_prefix_rejects_unsafe_characters(self):
+        with patch.object(config, "PAYMENT_ID_PREFIX", "payment prefix"):
+            with self.assertRaisesRegex(ValueError, "PAYMENT_ID_PREFIX"):
+                config.validate_config()
+
     def test_customer_receipts_require_bedolaga_bot_token(self):
         with patch.multiple(
             config,
