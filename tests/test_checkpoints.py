@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 
 APP_DIR = Path(__file__).resolve().parents[1] / "app"
@@ -225,6 +225,46 @@ class CheckpointTests(unittest.TestCase):
             "2026-02-01T00:00:00Z",
             migrated["last_refund_sync_time"],
         )
+
+    def test_new_version_on_master_is_reported_once_per_day(self):
+        manager = SyncManager.__new__(SyncManager)
+        manager.state = {}
+        manager.save_state = Mock()
+        manager._emit = Mock()
+        response = SimpleNamespace(
+            status_code=200,
+            text='__version__ = "9.1.0"\n',
+        )
+        client = MagicMock()
+        client.__enter__.return_value.get.return_value = response
+
+        with patch("main.httpx.Client", return_value=client):
+            manager.check_for_updates()
+            first_check = manager.state["last_update_check"]
+            manager.check_for_updates()
+
+        manager._emit.assert_called_once_with("on_update_available", "9.1.0")
+        self.assertEqual(first_check, manager.state["last_update_check"])
+        client.__enter__.return_value.get.assert_called_once_with(
+            main_module.GITHUB_VERSION_URL
+        )
+
+    def test_current_version_on_master_does_not_send_notification(self):
+        manager = SyncManager.__new__(SyncManager)
+        manager.state = {}
+        manager.save_state = Mock()
+        manager._emit = Mock()
+        response = SimpleNamespace(
+            status_code=200,
+            text=f'__version__ = "{main_module.__version__}"\n',
+        )
+        client = MagicMock()
+        client.__enter__.return_value.get.return_value = response
+
+        with patch("main.httpx.Client", return_value=client):
+            manager.check_for_updates()
+
+        manager._emit.assert_not_called()
 
     def test_legacy_not_found_rejection_returns_to_retry_queue(self):
         manager = SyncManager.__new__(SyncManager)

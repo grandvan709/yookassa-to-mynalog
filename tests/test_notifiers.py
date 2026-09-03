@@ -82,6 +82,25 @@ class PendingRefundNotificationTests(unittest.TestCase):
 
         self.assertIn("Успешно: <b>1</b> из 1", message)
 
+    def test_update_notification_contains_versions_and_github_link(self):
+        telegram = TelegramNotifier("token", "chat")
+        email = EmailNotifier(
+            host="smtp.example.com",
+            port=587,
+            user="user@example.com",
+            password="secret",
+            to_email="owner@example.com",
+        )
+        telegram.on_update_available("9.1.0")
+        email.on_update_available("9.1.0")
+
+        telegram_message = telegram._build_message()
+        email_message = email._build_html()
+
+        for message in (telegram_message, email_message):
+            self.assertIn("9.1.0", message)
+            self.assertIn("github.com/zavul0nn/yookassa-to-mynalog", message)
+
 
 if __name__ == "__main__":
     unittest.main()

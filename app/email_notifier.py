@@ -174,7 +174,9 @@ class EmailNotifier:
         if self._update_available:
             sections.append(f"""
             <div style="background:#d1ecf1; border-left:4px solid #17a2b8; padding:12px 16px; margin-bottom:16px; border-radius:4px;">
-              <strong style="color:#0c5460;">🆕 Доступна новая версия {html_lib.escape(self._update_available)}</strong>
+              <strong style="color:#0c5460;">🆕 Доступна новая версия {html_lib.escape(self._update_available)}</strong><br>
+              <span>Установлена: {html_lib.escape(__version__)}</span><br>
+              <a href="https://github.com/zavul0nn/yookassa-to-mynalog">Открыть проект на GitHub</a>
             </div>
             """)
 

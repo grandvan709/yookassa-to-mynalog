@@ -2,6 +2,7 @@ import asyncio
 import argparse
 import os
 import logging
+import re
 import httpx
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -22,6 +23,11 @@ from customer_receipt_delivery import (
 
 LOG_DIR = os.getenv("LOG_DIR", "logs")
 DATA_DIR = os.getenv("DATA_DIR", "data")
+GITHUB_REPOSITORY_URL = "https://github.com/zavul0nn/yookassa-to-mynalog"
+GITHUB_VERSION_URL = (
+    "https://raw.githubusercontent.com/"
+    "zavul0nn/yookassa-to-mynalog/master/app/version.py"
+)
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -280,19 +286,26 @@ class SyncManager:
                 pass
 
         try:
-            url = "https://api.github.com/repos/zavul0nn/yookassa-to-mynalog/releases/latest"
             with httpx.Client(trust_env=False, timeout=10.0) as client:
-                resp = client.get(url, headers={"Accept": "application/vnd.github+json"})
+                resp = client.get(GITHUB_VERSION_URL)
             if resp.status_code == 200:
-                latest = resp.json().get("tag_name", "")
+                match = re.search(
+                    r"__version__\s*=\s*['\"]([^'\"]+)['\"]",
+                    resp.text,
+                )
+                latest = match.group(1).strip() if match else ""
                 if latest and _parse_version(latest) > _parse_version(__version__):
                     logging.warning(
                         f"⚠️ Доступна новая версия {latest} (текущая: {__version__}). "
-                        f"https://github.com/zavul0nn/yookassa-to-mynalog/releases/latest"
+                        f"{GITHUB_REPOSITORY_URL}"
                     )
                     self._emit("on_update_available", latest.lstrip("vV"))
-                else:
+                elif latest:
                     logging.info(f"✓ Установлена актуальная версия ({__version__}).")
+                else:
+                    logging.warning(
+                        "Не удалось определить версию проекта в app/version.py."
+                    )
             else:
                 logging.warning(f"Не удалось проверить обновления (GitHub вернул {resp.status_code}).")
         except Exception as e:

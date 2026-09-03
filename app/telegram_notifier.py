@@ -131,7 +131,14 @@ class TelegramNotifier:
         ]
 
         if self._update_available:
-            lines.append(f"🆕 <b>Доступна новая версия {html.escape(self._update_available)}</b>")
+            lines.append(
+                f"🆕 <b>Доступна новая версия {html.escape(self._update_available)}</b>"
+            )
+            lines.append(f"Установлена: <code>{html.escape(__version__)}</code>")
+            lines.append(
+                '<a href="https://github.com/zavul0nn/yookassa-to-mynalog">'
+                "Открыть проект на GitHub</a>"
+            )
             lines.append("")
 
         if self._yookassa_errors:
