@@ -165,6 +165,7 @@ class SyncManager:
             "payment_event_times": {},
             "refund_event_times": {},
             "last_refund_sync_time": None,
+            "refund_tracking_started_at": None,
             "notification_preferences": {
                 "receipt_success": True,
                 "receipt_errors": True,
@@ -182,6 +183,21 @@ class SyncManager:
         for key, default in defaults.items():
             if key not in state:
                 state[key] = default
+
+        if config.REFUNDS_ENABLED and not state.get("refund_tracking_started_at"):
+            now = datetime.now(timezone.utc).isoformat()
+            # Старый set-sync-start заполнял last_refund_sync_time даже при
+            # выключенной функции. Считаем прежний checkpoint действительным
+            # только тогда, когда в state уже есть возвраты.
+            was_used = bool(
+                state.get("processed_refunds") or state.get("pending_refunds")
+            )
+            started_at = (
+                state.get("last_refund_sync_time") if was_used else None
+            ) or now
+            state["refund_tracking_started_at"] = started_at
+            state["last_refund_sync_time"] = started_at
+            logging.info("Наблюдение за возвратами включено с %s.", started_at)
 
         # Старые версии принимали ответ авторизации "Не найдено" во время
         # техработ ЛК ФЛ за постоянный отказ. Возвращаем только такие записи в
@@ -230,6 +246,7 @@ class SyncManager:
             "payment_event_times": {},
             "refund_event_times": {},
             "last_refund_sync_time": None,
+            "refund_tracking_started_at": None,
             "notification_preferences": {
                 "receipt_success": True,
                 "receipt_errors": True,
@@ -242,6 +259,7 @@ class SyncManager:
                 or config.TELEGRAM_THREAD_ID,
             },
         }
+        base = self._ensure_state_fields(base)
         self.state_store.save(base)
         return base
 
@@ -471,9 +489,19 @@ class SyncManager:
 
     async def get_new_refunds(self):
         if not config.REFUNDS_ENABLED:
-            return [], None
+            return [], None, None
         new_refunds = []
-        last_refund_sync = self.state.get("last_refund_sync_time") or self.state.get("last_sync_time")
+        last_refund_sync = (
+            self.state.get("last_refund_sync_time")
+            or self.state.get("refund_tracking_started_at")
+        )
+        if not last_refund_sync:
+            # Защита для вызова без обычной инициализации SyncManager.
+            last_refund_sync = datetime.now(timezone.utc).isoformat()
+            self.state["refund_tracking_started_at"] = last_refund_sync
+            self.state["last_refund_sync_time"] = last_refund_sync
+            self.save_state()
+        scan_checkpoint = datetime.now(timezone.utc).isoformat()
         processed_ids = set(self.state["processed_refunds"])
         pending_ids = {item["refund_id"] for item in self.state["pending_refunds"]}
         skip_ids = processed_ids | pending_ids
@@ -497,14 +525,14 @@ class SyncManager:
                         new_refunds.append(refund)
         except asyncio.TimeoutError:
             logging.error("Таймаут получения возвратов ЮKassa (>120s)")
-            return new_refunds, "Таймаут API ЮКассы (>120s)"
+            return new_refunds, "Таймаут API ЮКассы (>120s)", None
         except Exception as e:
             err_type = type(e).__name__
             err_text = str(e) or "нет деталей"
             logging.error(f"Ошибка получения возвратов ЮKassa: [{err_type}] {err_text}")
-            return new_refunds, f"[{err_type}] {err_text}"
+            return new_refunds, f"[{err_type}] {err_text}", None
 
-        return new_refunds, None
+        return new_refunds, None, scan_checkpoint
 
     async def get_yookassa_payment(self, payment_id):
         try:
@@ -1047,6 +1075,27 @@ class SyncManager:
             if item.get("refund_id") != refund_id
         ]
         self.save_state()
+        if replacement_receipt_uuid:
+            logging.info(
+                "✓ Частичный возврат обработан: возврат=%s, платёж=%s, "
+                "сумма=%s руб., исходный чек=%s аннулирован, остаток=%s руб., "
+                "новый чек=%s.",
+                refund_id,
+                payment_id,
+                adjustment["refund_amount"],
+                adjustment.get("receipt_uuid") or "неизвестен",
+                adjustment["remaining_amount"],
+                replacement_receipt_uuid,
+            )
+        else:
+            logging.info(
+                "✓ Полный возврат обработан: возврат=%s, платёж=%s, "
+                "сумма=%s руб., чек=%s аннулирован.",
+                refund_id,
+                payment_id,
+                adjustment["refund_amount"],
+                adjustment.get("receipt_uuid") or "неизвестен",
+            )
 
     def _prune_processed_history(self):
         cutoff = datetime.now(timezone.utc) - timedelta(
@@ -1296,7 +1345,9 @@ class SyncManager:
                     )
                     self._emit("on_pending_refunds_found", manual)
 
-            new_refunds, refunds_error = await self.get_new_refunds()
+            new_refunds, refunds_error, refund_scan_checkpoint = (
+                await self.get_new_refunds()
+            )
 
             if refunds_error:
                 sync_ok = False
@@ -1420,17 +1471,29 @@ class SyncManager:
                     f"Результат возвратов: аннулировано={cancelled}, "
                     f"скорректировано={adjusted}, ошибок={cancel_failed}"
                 )
-                if not refunds_error and cancel_failed == 0:
-                    self.state["last_refund_sync_time"] = _latest_created_at(new_refunds)
-                    self.save_state()
-                else:
+                if refunds_error or cancel_failed:
                     logging.warning(
                         "Checkpoint возвратов не обновлён: следующий запуск повторно "
                         "проверит незавершённый диапазон."
                     )
             else:
                 if not refunds_error:
-                    logging.info("✓ Новых возвратов не найдено.")
+                    if config.REFUNDS_ENABLED:
+                        logging.info("✓ Новых возвратов не найдено.")
+                    else:
+                        logging.info(
+                            "Обработка возвратов отключена "
+                            "(REFUNDS_ENABLED=false)."
+                        )
+
+            if (
+                config.REFUNDS_ENABLED
+                and refund_scan_checkpoint
+                and not refunds_error
+                and (not new_refunds or cancel_failed == 0)
+            ):
+                self.state["last_refund_sync_time"] = refund_scan_checkpoint
+                self.save_state()
 
         except Exception as e:
             sync_ok = False
@@ -1524,6 +1587,12 @@ def print_banner():
         ("Авторизация", config.MOY_NALOG_AUTH_METHOD),
         ("Расписание", config.CRON_SCHEDULE),
         ("Повторы ФНС", config.FNS_RETRY_SCHEDULE),
+        (
+            "Возвраты",
+            colorize("✓ включены", "green")
+            if config.REFUNDS_ENABLED
+            else colorize("· выключены", "gray"),
+        ),
         ("Ожидание оплаты", f"{config.PENDING_PAYMENT_WATCH_MINUTES} мин."),
         (
             "Лимит очереди",

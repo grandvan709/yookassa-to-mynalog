@@ -247,7 +247,7 @@ class StateStoreTests(unittest.TestCase):
         state = store.load()
         self.assertEqual("2026-08-06T12:42:30Z", state["last_sync_time"])
         self.assertEqual(
-            "2026-08-06T12:42:30Z",
+            "2026-01-01T00:00:00Z",
             state["last_refund_sync_time"],
         )
 

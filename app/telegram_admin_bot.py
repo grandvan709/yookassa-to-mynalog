@@ -369,6 +369,8 @@ class TelegramAdminBot:
             f"— автоматический повтор: <b>{ready}</b>\n"
             f"— ручная проверка: <b>{manual}</b>\n"
             f"Неоплаченных под наблюдением: <b>{len(watched_payments)}</b>\n"
+            "Обработка возвратов: "
+            f"<b>{self._enabled(config.REFUNDS_ENABLED)}</b>\n"
             f"Возвратов в обработке: <b>{len(pending_refunds)}</b>\n"
             f"Чеков ожидают доставки клиентам: <b>{pending_deliveries}</b>\n"
             f"Чеков не удалось доставить: <b>{failed_deliveries}</b>\n"

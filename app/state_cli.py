@@ -218,9 +218,8 @@ def set_sync_start(store, value):
     try:
         state = store.load() or {}
         state["last_sync_time"] = timestamp
-        state["last_refund_sync_time"] = timestamp
         store.save(state)
-        print(f"Начало синхронизации установлено: {timestamp}")
+        print(f"Начало синхронизации платежей установлено: {timestamp}")
         return 0
     finally:
         store.release_lock()

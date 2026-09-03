@@ -106,6 +106,7 @@ def manager_with(
     payments_error=None,
     refunds_error=None,
     payment_totals=None,
+    refund_scan_checkpoint="2026-01-05T00:00:00Z",
 ):
     manager = SyncManager.__new__(SyncManager)
     manager.state = {
@@ -138,7 +139,8 @@ def manager_with(
         return payments, payments_error, checkpoint
 
     async def get_refunds():
-        return refunds, refunds_error
+        checkpoint = None if refunds_error else refund_scan_checkpoint
+        return refunds, refunds_error, checkpoint
 
     async def get_payment(payment_id):
         totals = payment_totals or {}
@@ -187,6 +189,43 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual([], state["expired_unpaid_payments"])
         self.assertEqual([], state["receipt_deliveries"])
 
+    def test_first_refund_enable_starts_now_instead_of_legacy_sync_date(self):
+        manager = SyncManager.__new__(SyncManager)
+        state = {
+            "last_refund_sync_time": "2025-01-01T00:00:00Z",
+            "processed_refunds": [],
+            "pending_refunds": [],
+        }
+
+        migrated = manager._ensure_state_fields(state)
+
+        self.assertNotEqual(
+            "2025-01-01T00:00:00Z",
+            migrated["refund_tracking_started_at"],
+        )
+        self.assertEqual(
+            migrated["refund_tracking_started_at"],
+            migrated["last_refund_sync_time"],
+        )
+
+    def test_refund_tracking_start_survives_later_restarts(self):
+        manager = SyncManager.__new__(SyncManager)
+        state = {
+            "refund_tracking_started_at": "2026-01-01T00:00:00Z",
+            "last_refund_sync_time": "2026-02-01T00:00:00Z",
+        }
+
+        migrated = manager._ensure_state_fields(state)
+
+        self.assertEqual(
+            "2026-01-01T00:00:00Z",
+            migrated["refund_tracking_started_at"],
+        )
+        self.assertEqual(
+            "2026-02-01T00:00:00Z",
+            migrated["last_refund_sync_time"],
+        )
+
     def test_legacy_not_found_rejection_returns_to_retry_queue(self):
         manager = SyncManager.__new__(SyncManager)
         state = {
@@ -231,9 +270,10 @@ class CheckpointTests(unittest.TestCase):
         )
 
         with patch("main.Refund.list", return_value=response):
-            refunds, error = asyncio.run(manager.get_new_refunds())
+            refunds, error, checkpoint = asyncio.run(manager.get_new_refunds())
 
         self.assertIsNone(error)
+        self.assertIsNotNone(checkpoint)
         self.assertEqual(["refund-new"], [item.id for item in refunds])
 
     def test_pending_payment_is_not_returned_for_processing_again(self):
@@ -799,7 +839,8 @@ class CheckpointTests(unittest.TestCase):
             payment_totals={"payment-new": "100.00"},
         )
 
-        asyncio.run(manager.sync())
+        with patch("main.logging.info") as log_info:
+            asyncio.run(manager.sync())
 
         self.assertEqual(["receipt-new"], nalog.cancel_calls)
         self.assertTrue(
@@ -809,9 +850,16 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual([], manager.state["pending_refunds"])
         self.assertEqual("60.00", manager.state["payment_balances"]["payment-new"])
         self.assertEqual(
-            "2026-01-03T00:00:00Z",
+            "2026-01-05T00:00:00Z",
             manager.state["last_refund_sync_time"],
         )
+        self.assertTrue(any(
+            call.args
+            and str(call.args[0]).startswith("✓ Частичный возврат обработан")
+            and "refund-partial" in call.args
+            and "payment-new" in call.args
+            for call in log_info.call_args_list
+        ))
 
     def test_unknown_replacement_is_kept_for_manual_reconciliation(self):
         partial = refund(
@@ -921,7 +969,7 @@ class CheckpointTests(unittest.TestCase):
             "main.Refund.list"
         ) as refund_list:
             result = asyncio.run(manager.get_new_refunds())
-        self.assertEqual(([], None), result)
+        self.assertEqual(([], None, None), result)
         refund_list.assert_not_called()
 
     def test_two_partial_refunds_update_running_balance(self):
@@ -983,7 +1031,17 @@ class CheckpointTests(unittest.TestCase):
         asyncio.run(manager.sync())
 
         self.assertEqual(
-            "2026-01-03T00:00:00Z",
+            "2026-01-05T00:00:00Z",
+            manager.state["last_refund_sync_time"],
+        )
+
+    def test_empty_refund_scan_advances_its_own_checkpoint(self):
+        manager = manager_with([], [], FakeNalog())
+
+        asyncio.run(manager.sync())
+
+        self.assertEqual(
+            "2026-01-05T00:00:00Z",
             manager.state["last_refund_sync_time"],
         )
 
