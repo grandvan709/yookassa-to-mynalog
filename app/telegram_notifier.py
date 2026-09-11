@@ -2,6 +2,7 @@ import html
 import httpx
 import logging
 from datetime import datetime
+from decimal import Decimal
 from collections import defaultdict
 from version import __version__
 
@@ -27,15 +28,17 @@ class TelegramNotifier:
         self.proxy = proxy
         self.api_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
 
-        self._payments: list[float] = []
+        self._payments: list[Decimal] = []
         self._errors: list[tuple[str, str]] = []
         self._start_time: datetime | None = None
         self._found_count: int = 0
         self._cancelled: int = 0
+        self._adjusted: int = 0
         self._cancel_errors: int = 0
         self._verified: int = 0
         self._pending_count: int = 0
         self._refund_skipped: int = 0
+        self._pending_refund_count: int = 0
         self._yookassa_errors: list[str] = []
         self._update_available: str | None = None
 
@@ -45,22 +48,28 @@ class TelegramNotifier:
         self._payments = []
         self._errors = []
         self._cancelled = 0
+        self._adjusted = 0
         self._cancel_errors = 0
         self._verified = 0
         self._refund_skipped = 0
         self._yookassa_errors = []
+        self._pending_count = 0
+        self._pending_refund_count = 0
 
     def on_pending_found(self, count: int):
         self._pending_count = count
 
-    def on_payment_success(self, amount: float):
-        self._payments.append(amount)
+    def on_payment_success(self, amount):
+        self._payments.append(Decimal(str(amount)))
 
     def on_payment_error(self, payment_id: str, error: str):
         self._errors.append((payment_id, error))
 
     def on_refund_cancelled(self):
         self._cancelled += 1
+
+    def on_refund_adjusted(self):
+        self._adjusted += 1
 
     def on_refund_error(self):
         self._cancel_errors += 1
@@ -70,6 +79,9 @@ class TelegramNotifier:
 
     def on_refund_skipped(self):
         self._refund_skipped += 1
+
+    def on_pending_refunds_found(self, count: int):
+        self._pending_refund_count = count
 
     def on_yookassa_error(self, message: str):
         self._yookassa_errors.append(message)
@@ -90,8 +102,10 @@ class TelegramNotifier:
 
     async def send_summary(self):
         if (not self._payments and not self._errors and not self._cancelled
+                and not self._adjusted
                 and not self._cancel_errors and not self._pending_count
                 and not self._refund_skipped and not self._yookassa_errors
+                and not self._pending_refund_count
                 and not self._update_available):
             return
 
@@ -101,7 +115,8 @@ class TelegramNotifier:
     def _build_message(self) -> str:
         successful = len(self._payments)
         failed = len(self._errors)
-        total = sum(self._payments)
+        found_count = max(self._found_count, successful + failed)
+        total = sum(self._payments, Decimal("0"))
 
         date_str = (
             self._start_time.strftime("%d.%m.%Y %H:%M")
@@ -116,7 +131,14 @@ class TelegramNotifier:
         ]
 
         if self._update_available:
-            lines.append(f"🆕 <b>Доступна новая версия {html.escape(self._update_available)}</b>")
+            lines.append(
+                f"🆕 <b>Доступна новая версия {html.escape(self._update_available)}</b>"
+            )
+            lines.append(f"Установлена: <code>{html.escape(__version__)}</code>")
+            lines.append(
+                '<a href="https://github.com/zavul0nn/yookassa-to-mynalog">'
+                "Открыть проект на GitHub</a>"
+            )
             lines.append("")
 
         if self._yookassa_errors:
@@ -130,20 +152,27 @@ class TelegramNotifier:
             lines.append(f"⏳ Pending-платежей: <b>{self._pending_count}</b> (требуют ручной проверки)")
             lines.append("")
 
+        if self._pending_refund_count:
+            lines.append(
+                f"↩️ Частичных возвратов для ручной обработки: "
+                f"<b>{self._pending_refund_count}</b>"
+            )
+            lines.append("")
+
         if successful or failed:
             if failed == 0:
                 lines.append(
-                    f"✅ Успешно: <b>{successful}</b> из {self._found_count} {_plural(self._found_count, 'платежа', 'платежей', 'платежей')}"
+                    f"✅ Успешно: <b>{successful}</b> из {found_count} {_plural(found_count, 'платежа', 'платежей', 'платежей')}"
                 )
             else:
                 lines.append(
                     f"✅ Успешно: <b>{successful}</b> | ❌ Ошибок: <b>{failed}</b>"
                 )
 
-            total_str = f"{total:,.0f}".replace(",", "\u00a0")
+            total_str = f"{total:,.2f}".replace(",", "\u00a0")
             lines.append(f"💰 Итого: <b>{total_str} руб.</b>")
 
-            breakdown: dict[float, int] = defaultdict(int)
+            breakdown: dict[Decimal, int] = defaultdict(int)
             for amount in self._payments:
                 breakdown[amount] += 1
 
@@ -156,17 +185,22 @@ class TelegramNotifier:
                 for amount in sorted(breakdown.keys(), reverse=True):
                     count = breakdown[amount]
                     word = _plural(count, "платёж", "платежа", "платежей")
-                    lines.append(f"  • {amount:g} руб. — {count} {word}")
+                    lines.append(f"  • {amount:.2f} руб. — {count} {word}")
 
-        if self._cancelled or self._cancel_errors or self._refund_skipped:
+        if self._cancelled or self._adjusted or self._cancel_errors or self._refund_skipped:
             lines.append("")
             if self._cancelled:
                 word = _plural(self._cancelled, "чек аннулирован", "чека аннулировано", "чеков аннулировано")
                 lines.append(f"↩️ Возвраты: <b>{self._cancelled}</b> {word}")
+            if self._adjusted:
+                lines.append(
+                    f"🧾 Частичных возвратов скорректировано: "
+                    f"<b>{self._adjusted}</b>"
+                )
             if self._cancel_errors:
                 lines.append(f"⚠️ Ошибок аннулирования: <b>{self._cancel_errors}</b>")
             if self._refund_skipped:
-                lines.append(f"⏭ Пропущено возвратов (нет чека): <b>{self._refund_skipped}</b>")
+                lines.append(f"⏭ Возвратов передано на ручную обработку: <b>{self._refund_skipped}</b>")
 
         if self._errors:
             lines.append("")
