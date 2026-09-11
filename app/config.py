@@ -210,7 +210,7 @@ def validate_config():
         if compiled.groups < 1:
             raise ValueError(
                 "TELEGRAM_CUSTOMER_ID_PATTERN должен содержать группу захвата "
-                "с Telegram ID, например: \(ID\s+(\d{1,13})\)"
+                r"с Telegram ID, например: \(ID\s+(\d{1,13})\)"
             )
     if BACKUP_TARGET == "telegram" and not (
         TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
