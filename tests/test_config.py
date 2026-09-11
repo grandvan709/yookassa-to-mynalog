@@ -43,7 +43,7 @@ class SyncStartConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "PAYMENT_ID_PREFIX"):
                 config.validate_config()
 
-    def test_customer_receipts_require_bedolaga_bot_token(self):
+    def test_customer_receipts_require_customer_bot_token(self):
         with patch.multiple(
             config,
             TELEGRAM_CUSTOMER_RECEIPTS_ENABLED=True,

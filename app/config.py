@@ -72,6 +72,12 @@ MOY_NALOG_RECEIPT_INN = os.getenv("MOY_NALOG_RECEIPT_INN") or MOY_NALOG_LOGIN
 TELEGRAM_CUSTOMER_RECEIPT_MAX_MB = float(
     os.getenv("TELEGRAM_CUSTOMER_RECEIPT_MAX_MB", "10")
 )
+TELEGRAM_CUSTOMER_ID_PATTERN = os.getenv(
+    "TELEGRAM_CUSTOMER_ID_PATTERN", r"\(ID\s+(\d{1,13})\)"
+)
+TELEGRAM_CUSTOMER_MENU_CALLBACK = os.getenv(
+    "TELEGRAM_CUSTOMER_MENU_CALLBACK", ""
+).strip()
 
 SMTP_HOST = os.getenv("SMTP_HOST")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
@@ -194,6 +200,18 @@ def validate_config():
             str(MOY_NALOG_RECEIPT_INN)
         ) not in (10, 12):
             raise ValueError("MOY_NALOG_RECEIPT_INN должен содержать 10 или 12 цифр.")
+        try:
+            compiled = re.compile(TELEGRAM_CUSTOMER_ID_PATTERN)
+        except re.error as exc:
+            raise ValueError(
+                f"TELEGRAM_CUSTOMER_ID_PATTERN не является корректным регулярным "
+                f"выражением: {exc}"
+            ) from exc
+        if compiled.groups < 1:
+            raise ValueError(
+                "TELEGRAM_CUSTOMER_ID_PATTERN должен содержать группу захвата "
+                "с Telegram ID, например: \(ID\s+(\d{1,13})\)"
+            )
     if BACKUP_TARGET == "telegram" and not (
         TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
     ):

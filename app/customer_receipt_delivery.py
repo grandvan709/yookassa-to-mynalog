@@ -8,16 +8,24 @@ from urllib.parse import quote
 import httpx
 
 
-TELEGRAM_USER_ID_PATTERN = re.compile(r"\(ID\s+(\d{1,13})\)")
+DEFAULT_USER_ID_PATTERN = r"\(ID\s+(\d{1,13})\)"
+TELEGRAM_USER_ID_PATTERN = re.compile(DEFAULT_USER_ID_PATTERN)
 MAX_TELEGRAM_USER_ID = 1_099_511_627_775
 
 
-def extract_telegram_user_id(description):
-    """Извлечь Telegram user ID только из контролируемого формата платежа."""
-    match = TELEGRAM_USER_ID_PATTERN.search(str(description or ""))
+def extract_telegram_user_id(description, pattern=None):
+    """Извлечь Telegram user ID по шаблону описания платежа."""
+    if pattern is None:
+        pattern = TELEGRAM_USER_ID_PATTERN
+    elif isinstance(pattern, str):
+        pattern = re.compile(pattern)
+    match = pattern.search(str(description or ""))
     if not match:
         return None
-    user_id = int(match.group(1))
+    try:
+        user_id = int(match.group(1))
+    except (IndexError, ValueError):
+        return None
     return user_id if 0 < user_id <= MAX_TELEGRAM_USER_ID else None
 
 
@@ -29,7 +37,7 @@ class DeliveryResult:
 
 
 class CustomerReceiptDelivery:
-    """Скачивает публичную печатную форму ФНС и отправляет её BEDOLAGA-ботом."""
+    """Скачивает публичную печатную форму ФНС и отправляет её Telegram-ботом."""
 
     def __init__(
         self,
@@ -39,6 +47,7 @@ class CustomerReceiptDelivery:
         telegram_proxy=None,
         nalog_proxy=None,
         max_bytes=10 * 1024 * 1024,
+        menu_callback=None,
         transport=None,
     ):
         self.bot_token = bot_token
@@ -46,6 +55,7 @@ class CustomerReceiptDelivery:
         self.telegram_proxy = telegram_proxy
         self.nalog_proxy = nalog_proxy
         self.max_bytes = max_bytes
+        self.menu_callback = (menu_callback or "").strip() or None
         self.transport = transport
 
     def receipt_url(self, receipt_uuid):
@@ -237,11 +247,10 @@ class CustomerReceiptDelivery:
             "Чек зарегистрирован в ФНС через сервис «Мой налог»."
         )
 
-    @staticmethod
-    def _keyboard(receipt_url):
-        return {
-            "inline_keyboard": [
-                [{"text": "🧾 Открыть чек", "url": receipt_url}],
-                [{"text": "🏠 На главную", "callback_data": "back_to_menu"}],
-            ]
-        }
+    def _keyboard(self, receipt_url):
+        rows = [[{"text": "🧾 Открыть чек", "url": receipt_url}]]
+        if self.menu_callback:
+            rows.append(
+                [{"text": "🏠 На главную", "callback_data": self.menu_callback}]
+            )
+        return {"inline_keyboard": rows}

@@ -22,20 +22,31 @@ class CustomerReceiptDeliveryTests(unittest.TestCase):
         self.assertEqual(1929069704, extract_telegram_user_id(description))
         self.assertIsNone(extract_telegram_user_id("ID 1929069704"))
 
-    def test_jpeg_receipt_is_sent_with_bedolaga_home_callback(self):
-        requests = []
+    def test_custom_pattern_extracts_telegram_id(self):
+        self.assertEqual(
+            777, extract_telegram_user_id("оплата tg:777", r"tg:(\d{1,13})")
+        )
+        self.assertIsNone(
+            extract_telegram_user_id("оплата (ID 777)", r"tg:(\d{1,13})")
+        )
 
+    def _jpeg_delivery(self, requests, **kwargs):
         def handler(request):
             requests.append(request)
             if request.url.host == "lknpd.nalog.ru":
                 return httpx.Response(200, content=b"\xff\xd8\xffjpeg")
             return httpx.Response(200, json={"ok": True})
 
-        delivery = CustomerReceiptDelivery(
+        return CustomerReceiptDelivery(
             "secret-token",
             "123456789012",
             transport=httpx.MockTransport(handler),
+            **kwargs,
         )
+
+    def test_jpeg_receipt_is_sent_without_menu_button_by_default(self):
+        requests = []
+        delivery = self._jpeg_delivery(requests)
 
         result = asyncio.run(delivery.deliver({
             "receipt_uuid": "receipt-1",
@@ -47,8 +58,21 @@ class CustomerReceiptDeliveryTests(unittest.TestCase):
         self.assertEqual(2, len(requests))
         telegram_request = requests[1]
         self.assertTrue(telegram_request.url.path.endswith("/sendPhoto"))
-        self.assertIn(b"back_to_menu", telegram_request.content)
+        self.assertNotIn(b"callback_data", telegram_request.content)
         self.assertIn(b"1929069704", telegram_request.content)
+
+    def test_menu_callback_adds_second_button(self):
+        requests = []
+        delivery = self._jpeg_delivery(requests, menu_callback="back_to_menu")
+
+        result = asyncio.run(delivery.deliver({
+            "receipt_uuid": "receipt-1",
+            "telegram_user_id": 1929069704,
+            "amount": "349.00",
+        }))
+
+        self.assertEqual("delivered", result.status)
+        self.assertIn(b"back_to_menu", requests[1].content)
 
     def test_download_failure_sends_link_once_and_keeps_file_retry(self):
         requests = []
@@ -83,7 +107,7 @@ class CustomerReceiptDeliveryTests(unittest.TestCase):
         ]
         self.assertEqual(1, len(telegram_requests))
         self.assertTrue(telegram_requests[0].url.path.endswith("/sendMessage"))
-        self.assertIn(b"back_to_menu", telegram_requests[0].content)
+        self.assertIn(b"receipt-1/print", telegram_requests[0].content)
 
     def test_blocked_bot_marks_delivery_as_undeliverable(self):
         def handler(request):

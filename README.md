@@ -36,7 +36,7 @@
 Клонируйте репозиторий и запустите установщик:
 
 ```bash
-git clone https://github.com/zavul0nn/yookassa-to-mynalog.git
+git clone https://github.com/grandvan709/yookassa-to-mynalog.git
 cd yookassa-to-mynalog
 bash install.sh
 ```
@@ -164,9 +164,11 @@ bash install.sh
 | `TELEGRAM_ADMIN_USER_ID` | Числовой ID единственного пользователя, которому разрешены команды |
 | `TELEGRAM_BOT_HEALTH_MAX_AGE_MINUTES` | Допустимый перерыв между успешными опросами Telegram API |
 | `TELEGRAM_CUSTOMER_RECEIPTS_ENABLED` | Отправлять файл чека покупателю по ID из описания платежа |
-| `TELEGRAM_CUSTOMER_BOT_TOKEN` | Токен BEDOLAGA-бота; используется только для отправки и не запускает второй polling |
+| `TELEGRAM_CUSTOMER_BOT_TOKEN` | Токен бота, в котором покупатель создавал платёж; используется только для отправки и не запускает второй polling |
 | `MOY_NALOG_RECEIPT_INN` | ИНН для публичной печатной формы; по умолчанию `MOY_NALOG_LOGIN` |
 | `TELEGRAM_CUSTOMER_RECEIPT_MAX_MB` | Максимальный размер скачиваемого чека, по умолчанию 10 МБ |
+| `TELEGRAM_CUSTOMER_ID_PATTERN` | Регулярное выражение для поиска Telegram ID в описании платежа; нужна группа захвата |
+| `TELEGRAM_CUSTOMER_MENU_CALLBACK` | `callback_data` кнопки «На главную». Пусто — кнопка не добавляется |
 
 ### Telegram-бот управления
 
@@ -212,32 +214,37 @@ GitHub не чаще одного раза за 24 часа. Если там о�
 версиями и ссылкой на репозиторий. При актуальной версии сообщение не
 отправляется; результат проверки остаётся в `logs/sync.log`.
 
-### Доставка чека покупателю через BEDOLAGA-бота
+### Доставка чека покупателю в Telegram
 
-Встроенный NaloGO-сервис BEDOLAGA для этого не требуется: регистрацию дохода,
-очередь ФНС и защиту от дублей полностью выполняет этот проект. После успешной
-регистрации сервис извлекает Telegram ID из контролируемого описания YooKassa:
+Функция рассчитана на любой сценарий, где покупатель оплачивает через вашего
+Telegram-бота: регистрацию дохода, очередь ФНС и защиту от дублей полностью
+выполняет этот проект. После успешной регистрации сервис извлекает Telegram ID
+из описания платежа YooKassa по шаблону `TELEGRAM_CUSTOMER_ID_PATTERN`. Шаблон
+по умолчанию рассчитан на описание вида:
 
 ```text
 Интернет-сервис - Пополнение на 349 ₽ (ID 1234569704)
 ```
 
-Затем он скачивает публичную печатную форму ФНС и отправляет её фотографией или
-PDF через токен того BEDOLAGA-бота, в котором пользователь создавал платёж.
-Сообщение содержит кнопки «Открыть чек» и «На главную». Вторая передаёт
-`callback_data='back_to_menu'`, поэтому главное меню рисует штатный обработчик
-BEDOLAGA-бота.
+Если ваш бот формирует описание иначе, задайте своё регулярное выражение с
+группой захвата — например `TELEGRAM_CUSTOMER_ID_PATTERN='tg:(\d{1,13})'`.
+
+Затем сервис скачивает публичную печатную форму ФНС и отправляет её фотографией
+или PDF через токен того бота, в котором пользователь создавал платёж.
+Сообщение содержит кнопку «Открыть чек». Если ваш бот умеет обрабатывать
+возврат в меню, добавьте вторую кнопку, указав её `callback_data` в
+`TELEGRAM_CUSTOMER_MENU_CALLBACK`; по умолчанию кнопка не добавляется.
 
 ```env
 TELEGRAM_CUSTOMER_RECEIPTS_ENABLED='true'
-TELEGRAM_CUSTOMER_BOT_TOKEN='token_of_bedolaga_bot'
+TELEGRAM_CUSTOMER_BOT_TOKEN='token_of_your_bot'
 # Нужно отдельно только при refresh-авторизации без MOY_NALOG_LOGIN:
 MOY_NALOG_RECEIPT_INN='123456789012'
 TELEGRAM_CUSTOMER_RECEIPT_MAX_MB='10'
 ```
 
-Токен доставки не используется для `getUpdates` или webhook, поэтому основной
-BEDOLAGA-бот продолжает единолично обрабатывать кнопки и сообщения. Покупатель
+Токен доставки не используется для `getUpdates` или webhook, поэтому ваш
+основной бот продолжает единолично обрабатывать кнопки и сообщения. Покупатель
 уже запускал этого бота при оплате, следовательно Telegram разрешает доставку в
 его личный чат.
 
@@ -694,6 +701,10 @@ docker compose up -d --build && docker compose logs -f -t
 
 > **Ставь ⭐** и не пропусти регулярные обновления для поддержания актуальности скрипта и оптимальной автоматизации
 
-> USDT TON: `UQC8HHh2VUcRX7KJ5v8TSmZiqJR3bSqBzH3y_G9u84ELF66A`
+> USDT TRC20: TL6gHETnKqNWV4D6GjiKKahkBsAwcyWfo8 | [ЮKassa (руб.)](https://yookassa.ru/my/i/aZUoMtbfNgP8/l)
 
-Изначальный автор проекта: [GrandVan](https://t.me/grand_van).
+<p align=center>
+    <a href="https://t.me/grand_van" target="_blank" rel="noopener noreferrer">
+        <img src="https://img.shields.io/badge/Telegram-GrandVan-purple?logo=telegram&logoColor=white&labelColor=blue" alt="Chat me on Telegram">
+    </a>
+</p>

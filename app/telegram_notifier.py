@@ -136,7 +136,7 @@ class TelegramNotifier:
             )
             lines.append(f"Установлена: <code>{html.escape(__version__)}</code>")
             lines.append(
-                '<a href="https://github.com/zavul0nn/yookassa-to-mynalog">'
+                '<a href="https://github.com/grandvan709/yookassa-to-mynalog">'
                 "Открыть проект на GitHub</a>"
             )
             lines.append("")

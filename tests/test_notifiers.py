@@ -99,7 +99,7 @@ class PendingRefundNotificationTests(unittest.TestCase):
 
         for message in (telegram_message, email_message):
             self.assertIn("9.1.0", message)
-            self.assertIn("github.com/zavul0nn/yookassa-to-mynalog", message)
+            self.assertIn("github.com/grandvan709/yookassa-to-mynalog", message)
 
 
 if __name__ == "__main__":

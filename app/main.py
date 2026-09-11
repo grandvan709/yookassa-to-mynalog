@@ -23,10 +23,10 @@ from customer_receipt_delivery import (
 
 LOG_DIR = os.getenv("LOG_DIR", "logs")
 DATA_DIR = os.getenv("DATA_DIR", "data")
-GITHUB_REPOSITORY_URL = "https://github.com/zavul0nn/yookassa-to-mynalog"
+GITHUB_REPOSITORY_URL = "https://github.com/grandvan709/yookassa-to-mynalog"
 GITHUB_VERSION_URL = (
     "https://raw.githubusercontent.com/"
-    "zavul0nn/yookassa-to-mynalog/master/app/version.py"
+    "grandvan709/yookassa-to-mynalog/master/app/version.py"
 )
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -63,6 +63,7 @@ class SyncManager:
                 telegram_proxy=config.TELEGRAM_PROXY,
                 nalog_proxy=config.YOOKASSA_NALOG_PROXY,
                 max_bytes=int(config.TELEGRAM_CUSTOMER_RECEIPT_MAX_MB * 1024 * 1024),
+                menu_callback=config.TELEGRAM_CUSTOMER_MENU_CALLBACK,
             )
         else:
             self.customer_receipt_delivery = None
@@ -579,7 +580,9 @@ class SyncManager:
             "created_at": payment.created_at,
             "description": description,
             "payment_description": payment.description or "",
-            "telegram_user_id": extract_telegram_user_id(payment.description),
+            "telegram_user_id": extract_telegram_user_id(
+                payment.description, config.TELEGRAM_CUSTOMER_ID_PATTERN
+            ),
             "status": "ready" if currency == "RUB" else "unsupported_currency",
             "attempts": 0,
             "queue_attempts": 0,
@@ -723,7 +726,8 @@ class SyncManager:
         telegram_user_id = workflow.get("telegram_user_id")
         if not telegram_user_id:
             telegram_user_id = extract_telegram_user_id(
-                workflow.get("payment_description") or workflow.get("description")
+                workflow.get("payment_description") or workflow.get("description"),
+                config.TELEGRAM_CUSTOMER_ID_PATTERN,
             )
         if not telegram_user_id:
             logging.warning(
