@@ -25,7 +25,7 @@
 
 ## 📋 Требования
 
-- Linux с установленным Docker и Docker Compose
+- Linux (установщик сам поставит Docker с Compose, если их нет)
 - Учетные данные ЮKassa (Shop ID + API ключ)
 - Учетные данные Мой Налог (логин + пароль **или** refresh token при входе через Госуслуги)
 
@@ -33,25 +33,31 @@
 
 ## 🔧 Установка
 
-### 1. Устанавливаем Docker
+### 1. Скачиваем установщик
 ```bash
-sudo curl -fsSL https://get.docker.com | sh
+cd ~ && wget https://raw.githubusercontent.com/grandvan709/yookassa-to-mynalog/refs/heads/master/install.sh
 ```
 
-### 2. Создаем папку `/opt/yookassa-to-mynalog` и переходим в нее (а так же создадим папки `data` и `logs` внутри)
+### 2. Запускаем его
 ```bash
-sudo mkdir -p /opt/yookassa-to-mynalog/{data,logs} && cd /opt/yookassa-to-mynalog
+bash install.sh
 ```
 
-### 3. Скачиваем файлы `.env.example` (его сразу ренеймим в `.env`) и `docker-compose.yml`
+Установщик сделает всё сам: поставит Docker с Compose, если их нет, создаст
+`/opt/yookassa-to-mynalog/{data,logs}`, положит туда `docker-compose.yml` и
+создаст `.env` из шаблона.
+
+### 3. Заполняем `.env` и запускаем сервис
+Установщик в конце напомнит обе команды:
 ```bash
-sudo wget -O .env https://raw.githubusercontent.com/grandvan709/yookassa-to-mynalog/refs/heads/master/.env.example && sudo wget -O docker-compose.yml https://raw.githubusercontent.com/grandvan709/yookassa-to-mynalog/refs/heads/master/docker-compose.yml
+sudo nano /opt/yookassa-to-mynalog/.env
+cd /opt/yookassa-to-mynalog && sudo docker compose up -d && sudo docker compose logs -f -t
 ```
 
-### 4. Заполняем файл `.env` необходимыми значениями (см раздел "Конфигурация")
-```bash
-sudo nano .env
-```
+Какие значения указывать — см. раздел "Конфигурация".
+
+> Установщик безопасно запускать повторно: он обновит `docker-compose.yml` до
+> актуальной версии, а существующий `.env` не тронет.
 
 ## ⚙️ Конфигурация
 
