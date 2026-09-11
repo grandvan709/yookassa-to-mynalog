@@ -25,7 +25,7 @@
 
 ## 📋 Требования
 
-- Linux (Debian/Ubuntu) для автоматической установки либо уже установленный Docker
+- Linux с установленным Docker и Docker Compose
 - Учетные данные ЮKassa (Shop ID + API ключ)
 - Учетные данные Мой Налог (логин + пароль **или** refresh token при входе через Госуслуги)
 
@@ -33,22 +33,25 @@
 
 ## 🔧 Установка
 
-Клонируйте репозиторий и запустите установщик:
-
+### 1. Устанавливаем Docker
 ```bash
-git clone https://github.com/grandvan709/yookassa-to-mynalog.git
-cd yookassa-to-mynalog
-bash install.sh
+sudo curl -fsSL https://get.docker.com | sh
 ```
 
-Если Docker отсутствует, на Debian/Ubuntu установщик подключит официальный
-репозиторий Docker и установит Engine с Compose. При первом запуске он создаст
-`.env` и остановится — заполните реквизиты и повторите `bash install.sh`.
-Каталоги `data/` и `logs/`, UID/GID и права создаются автоматически.
+### 2. Создаем папку `/opt/yookassa-to-mynalog` и переходим в нее (а так же создадим папки `data` и `logs` внутри)
+```bash
+sudo mkdir -p /opt/yookassa-to-mynalog/{data,logs} && cd /opt/yookassa-to-mynalog
+```
 
-Опция `--add-docker-group` добавляет текущего пользователя в группу `docker`,
-чтобы работать без `sudo`. Учитывайте, что членство в этой группе фактически
-даёт root-доступ к хосту. Без этой опции установщик сам использует `sudo`.
+### 3. Скачиваем файлы `.env.example` (его сразу ренеймим в `.env`) и `docker-compose.yml`
+```bash
+sudo wget -O .env https://raw.githubusercontent.com/grandvan709/yookassa-to-mynalog/refs/heads/master/.env.example && sudo wget -O docker-compose.yml https://raw.githubusercontent.com/grandvan709/yookassa-to-mynalog/refs/heads/master/docker-compose.yml
+```
+
+### 4. Заполняем файл `.env` необходимыми значениями (см раздел "Конфигурация")
+```bash
+sudo nano .env
+```
 
 ## ⚙️ Конфигурация
 
@@ -129,10 +132,6 @@ bash install.sh
 | Переменная | По умолчанию | Описание |
 |-----------|:----------:|---------|
 | `TZ` | `Europe/Moscow` | Часовой пояс контейнера ([список](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)) |
-| `APP_UID` | `1000` | UID пользователя контейнера для доступа к каталогам хоста; установщик задаёт автоматически |
-| `APP_GID` | `1000` | GID группы контейнера для доступа к каталогам хоста; установщик задаёт автоматически |
-| `DOCKER_BUILD_NETWORK` | `host` | Сеть для сборочных команд; `host` обходит проблемы Docker bridge с доступом в интернет |
-| `DOCKER_NETWORK_MODE` | `bridge` | Сеть работающего контейнера; переключите на `host`, если внешние API недоступны |
 | `DEVICE_ID` | Генерация хеша из ИНН (21 символ) | ID устройства для авторизации в "Мой Налог". В режиме `password` — опционально; в режиме `refresh` — обязателен (берётся из браузера) |
 | `SYNC_START_DATE` | -24ч | Включительная граница начала: `YYYY-MM-DD` или точное время ISO 8601 |
 | `INCOME_DESCRIPTION_TEMPLATE` | `Платеж #{description}` | Шаблон описания дохода (см. ниже) |
@@ -401,6 +400,10 @@ PENDING_PAYMENT_WATCH_MINUTES='60'
 
 ### Безопасная проверка интеграции
 
+> Скрипты из `scripts/` не входят в Docker-образ. Они нужны только при отладке
+> и запускаются из клона репозитория: `git clone https://github.com/grandvan709/yookassa-to-mynalog.git`.
+> Для обычной установки этот раздел можно пропустить.
+
 Проверить доступ к ЮKassa только GET-запросами, без вывода данных платежей:
 
 ```bash
@@ -443,45 +446,24 @@ HTML-страницу техработ с кодом 200 и постоянную
 
 ### Первый запуск
 ```bash
-docker compose up -d --build
+cd /opt/yookassa-to-mynalog && sudo docker compose up -d
 ```
 
-Compose всегда собирает образ приложения из локального `Dockerfile`; образ
-приложения из Docker Hub не скачивается. Базовый `python:3.13-slim-bookworm`
-будет загружен один раз, если его ещё нет в локальном кеше Docker.
-
-Если сборка сообщает `Unable to connect to deb.debian.org`, значит исходящие
-соединения из Docker bridge заблокированы межсетевым экраном или правилами NAT.
-По умолчанию сборка уже использует сеть хоста. Убедитесь, что в `.env` нет
-`DOCKER_BUILD_NETWORK='bridge'`, затем повторите:
-
-```bash
-docker compose build --no-cache
-docker compose up -d
-```
-
-Если образ собирается, но работающий контейнер не подключается к YooKassa,
-ФНС или Telegram, задайте в `.env`:
-
-```env
-DOCKER_NETWORK_MODE='host'
-```
-
-После этого пересоздайте контейнер командой `docker compose up -d --force-recreate`.
+Готовый образ скачивается с Docker Hub, локальная сборка не требуется.
 
 ### Проверка логов
 ```bash
-docker compose logs -f -t
+cd /opt/yookassa-to-mynalog && sudo docker compose logs -f -t
 ```
 
 ### Остановка
 ```bash
-docker compose down
+cd /opt/yookassa-to-mynalog && sudo docker compose down
 ```
 
 ### Перезагрузка
 ```bash
-docker compose restart
+cd /opt/yookassa-to-mynalog && sudo docker compose down && sudo docker compose up -d
 ```
 
 База находится на хосте в `data/sync_state.db`, а файловые логи — в
@@ -505,7 +487,7 @@ TELEGRAM_CHAT_ID='...'
 `BACKUP_TARGET='email'` и заполните переменные `SMTP_*`. После изменения:
 
 ```bash
-docker compose up -d --build
+sudo docker compose up -d --force-recreate
 ```
 
 При запуске контейнер сразу создаёт первую копию, затем делает их по
@@ -682,21 +664,20 @@ cd /opt/yookassa-to-mynalog
 sudo docker compose down
 ```
 
-### 3. Получаем изменения исходного кода
+### 3. Скачиваем новый образ
 ```bash
-git pull --ff-only
+sudo docker compose pull
 ```
 
-### 4. Пересобираем контейнер локально и смотрим логи
+### 4. Запускаем контейнер и смотрим логи после запуска новой версии
 ```bash
-docker compose up -d --build && docker compose logs -f -t
+sudo docker compose up -d && sudo docker compose logs -f -t
 ```
 
 ### 5. Проверка docker-compose.yml и прочих файлов
 Перед обновлениями и запусками - убедитесь, что ваши файлы **docker-compose.yml** и **.env** *(и прочие, которые могут быть в будущем)* соответствуют последним версиям из репозитория!
 
-> Для работы без `sudo` можно один раз выполнить `bash install.sh --add-docker-group`
-> и затем перезайти в систему. Группа `docker` предоставляет root-уровень доступа.
+> Чтобы не писать `sudo` перед каждой командой `docker` - нужно внести пользователя, из под которого вы работаете, в группу **docker** следующей командой: `sudo usermod -aG docker <username>`. А затем перезайти на сервер.
 ---
 
 > **Ставь ⭐** и не пропусти регулярные обновления для поддержания актуальности скрипта и оптимальной автоматизации
