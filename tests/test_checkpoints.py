@@ -337,6 +337,23 @@ class CheckpointTests(unittest.TestCase):
         self.assertNotIn("+00:00", params["created_at.gte"])
         self.assertTrue(checkpoint.endswith("Z"))
 
+    def test_refund_query_sends_explicit_upper_bound(self):
+        manager = SyncManager.__new__(SyncManager)
+        manager.state = {
+            "last_refund_sync_time": "2026-09-01T00:00:00Z",
+            "processed_refunds": [],
+            "pending_refunds": [],
+        }
+        response = SimpleNamespace(items=[], next_cursor=None)
+
+        with patch("main.Refund.list", return_value=response) as refund_list:
+            _, _, checkpoint = asyncio.run(manager.get_new_refunds())
+
+        params = refund_list.call_args.args[0]
+        self.assertEqual(checkpoint, params["created_at.lte"])
+        self.assertTrue(params["created_at.lte"].endswith("Z"))
+        self.assertLess(params["created_at.gte"], params["created_at.lte"])
+
     def test_refund_query_normalises_non_utc_checkpoint(self):
         manager = SyncManager.__new__(SyncManager)
         manager.state = {
