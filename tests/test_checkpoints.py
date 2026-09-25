@@ -316,6 +316,61 @@ class CheckpointTests(unittest.TestCase):
         self.assertIsNotNone(checkpoint)
         self.assertEqual(["refund-new"], [item.id for item in refunds])
 
+    def test_refund_query_converts_offset_checkpoint_to_zulu(self):
+        manager = SyncManager.__new__(SyncManager)
+        manager.state = {
+            "last_refund_sync_time": "2026-09-19T22:17:39.467258+00:00",
+            "processed_refunds": [],
+            "pending_refunds": [],
+        }
+        response = SimpleNamespace(items=[], next_cursor=None)
+
+        with patch("main.Refund.list", return_value=response) as refund_list:
+            _, error, checkpoint = asyncio.run(manager.get_new_refunds())
+
+        params = refund_list.call_args.args[0]
+        self.assertIsNone(error)
+        self.assertEqual(
+            "2026-09-19T22:17:39.467258Z",
+            params["created_at.gte"],
+        )
+        self.assertNotIn("+00:00", params["created_at.gte"])
+        self.assertTrue(checkpoint.endswith("Z"))
+
+    def test_refund_query_normalises_non_utc_checkpoint(self):
+        manager = SyncManager.__new__(SyncManager)
+        manager.state = {
+            "last_refund_sync_time": "2026-09-20T01:17:39+03:00",
+            "processed_refunds": [],
+            "pending_refunds": [],
+        }
+        response = SimpleNamespace(items=[], next_cursor=None)
+
+        with patch("main.Refund.list", return_value=response) as refund_list:
+            asyncio.run(manager.get_new_refunds())
+
+        self.assertEqual(
+            "2026-09-19T22:17:39Z",
+            refund_list.call_args.args[0]["created_at.gte"],
+        )
+
+    def test_payment_query_sends_zulu_upper_bound(self):
+        manager = SyncManager.__new__(SyncManager)
+        manager.state = {
+            "last_sync_time": "2026-08-06T12:42:30Z",
+            "processed_payments": [],
+            "pending_payments": [],
+        }
+        response = SimpleNamespace(items=[], next_cursor=None)
+
+        with patch("main.Payment.list", return_value=response) as payment_list:
+            _, _, checkpoint = asyncio.run(manager.get_new_yookassa_payments())
+
+        params = payment_list.call_args.args[0]
+        self.assertTrue(params["created_at.lte"].endswith("Z"))
+        self.assertNotIn("+00:00", params["created_at.lte"])
+        self.assertTrue(checkpoint.endswith("Z"))
+
     def test_pending_payment_is_not_returned_for_processing_again(self):
         manager = SyncManager.__new__(SyncManager)
         manager.state = {

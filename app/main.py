@@ -192,7 +192,7 @@ class SyncManager:
                 state[key] = default
 
         if config.REFUNDS_ENABLED and not state.get("refund_tracking_started_at"):
-            now = datetime.now(timezone.utc).isoformat()
+            now = _yookassa_timestamp(datetime.now(timezone.utc))
             # Старый set-sync-start заполнял last_refund_sync_time даже при
             # выключенной функции. Считаем прежний checkpoint действительным
             # только тогда, когда в state уже есть возвраты.
@@ -345,8 +345,8 @@ class SyncManager:
         skip_ids = set(self.state["processed_payments"]) | pending_ids | expired_ids
 
         params = {
-            "created_at.gte": query_start.isoformat().replace("+00:00", "Z"),
-            "created_at.lte": now.isoformat().replace("+00:00", "Z"),
+            "created_at.gte": _yookassa_timestamp(query_start),
+            "created_at.lte": _yookassa_timestamp(now),
         }
 
         try:
@@ -386,7 +386,7 @@ class SyncManager:
             logging.error(f"Ошибка ЮKassa: [{err_type}] {err_text}")
             return new_payments, f"[{err_type}] {err_text}", None
 
-        scan_checkpoint = now.isoformat().replace("+00:00", "Z")
+        scan_checkpoint = _yookassa_timestamp(now)
         return new_payments, None, scan_checkpoint
 
     def _track_unpaid_payment(self, payment, status):
@@ -511,18 +511,19 @@ class SyncManager:
         )
         if not last_refund_sync:
             # Защита для вызова без обычной инициализации SyncManager.
-            last_refund_sync = datetime.now(timezone.utc).isoformat()
+            last_refund_sync = _yookassa_timestamp(datetime.now(timezone.utc))
             self.state["refund_tracking_started_at"] = last_refund_sync
             self.state["last_refund_sync_time"] = last_refund_sync
             self.save_state()
-        scan_checkpoint = datetime.now(timezone.utc).isoformat()
+        scan_checkpoint = _yookassa_timestamp(datetime.now(timezone.utc))
         processed_ids = set(self.state["processed_refunds"])
         pending_ids = {item["refund_id"] for item in self.state["pending_refunds"]}
         skip_ids = processed_ids | pending_ids
 
         params = {
             "status": "succeeded",
-            "created_at.gte": last_refund_sync
+            "created_at.gte": _yookassa_timestamp(last_refund_sync)
+            or last_refund_sync,
         }
 
         try:
@@ -1571,6 +1572,15 @@ def _parse_timestamp(value):
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _yookassa_timestamp(value):
+    parsed = value if isinstance(value, datetime) else _parse_timestamp(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse_version(v: str) -> tuple:
