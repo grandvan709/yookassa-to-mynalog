@@ -688,7 +688,7 @@ sudo docker compose up -d && sudo docker compose logs -f -t
 
 > **Ставь ⭐** и не пропусти регулярные обновления для поддержания актуальности скрипта и оптимальной автоматизации
 
-> USDT TRC20: TL6gHETnKqNWV4D6GjiKKahkBsAwcyWfo8 | [ЮKassa (руб.)](https://yookassa.ru/my/i/aZUoMtbfNgP8/l)
+> USDT TON: UQCB8C2cy844VKpgwa8JXUZH8YLATZtCzxdk_j7U0-mjCI4J | [ЮKassa (руб.)](https://yookassa.ru/my/i/aZUoMtbfNgP8/l)
 
 <p align=center>
     <a href="https://t.me/grand_van" target="_blank" rel="noopener noreferrer">
