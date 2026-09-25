@@ -524,6 +524,7 @@ class SyncManager:
             "status": "succeeded",
             "created_at.gte": _yookassa_timestamp(last_refund_sync)
             or last_refund_sync,
+            "created_at.lte": scan_checkpoint,
         }
 
         try:
