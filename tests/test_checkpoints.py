@@ -693,6 +693,9 @@ class CheckpointTests(unittest.TestCase):
         nalog = FakeNalog()
         manager = manager_with([], [], nalog)
         manager.state_store = FakeStateStore()
+        # This test isolates queue processing; real-store reloads have separate
+        # concurrency regression coverage.
+        manager._refresh_locked_state = Mock()
         manager.state["pending_payments"] = [{
             "payment_id": "queued",
             "amount": "100.00",

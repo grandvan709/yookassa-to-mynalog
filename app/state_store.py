@@ -204,6 +204,11 @@ class StateStore:
         try:
             with self._connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
+                lock = connection.execute(
+                    "SELECT owner FROM run_lock WHERE id = 1"
+                ).fetchone()
+                if lock and lock["owner"] != self.owner:
+                    raise ConcurrentRunError("сохранение state запрещено: блокировкой владеет другой процесс")
                 connection.execute(
                     """
                     INSERT INTO sync_state (id, data, updated_at)
