@@ -353,7 +353,9 @@ class SyncManager:
             res = await asyncio.wait_for(asyncio.to_thread(Payment.list, params), timeout=120)
             while True:
                 for payment in res.items:
-                    status = getattr(payment, "status", None) or "succeeded"
+                    status = getattr(payment, "status", None)
+                    if status not in ("pending", "waiting_for_capture", "succeeded", "canceled"):
+                        raise ValueError("ЮKassa вернула отсутствующий или неизвестный статус платежа")
                     if status == "succeeded":
                         if payment.id in watched_ids:
                             self._remove_watched_payment(payment.id)
@@ -565,6 +567,12 @@ class SyncManager:
             return None, f"[{err_type}] {err_text}"
 
     def _prepare_payment_workflow(self, payment):
+        # Never register sandbox or incomplete provider data in the real FNS account.
+        # Do not default missing fields to a successful/live payment.
+        if getattr(payment, "test", None) is not False:
+            raise ValueError("Регистрация НПД запрещена: платёж тестовый или признак test отсутствует")
+        if getattr(payment, "status", None) != "succeeded" or getattr(payment, "paid", None) is not True:
+            raise ValueError("Регистрация НПД запрещена: успешная оплата не подтверждена")
         amount = Decimal(str(payment.amount.value))
         currency = getattr(payment.amount, "currency", None)
         description = config.INCOME_DESCRIPTION_TEMPLATE.format_map(
