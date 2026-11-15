@@ -590,8 +590,9 @@ docker compose exec yookassa-to-mynalog python /app/state_cli.py retry-payment P
 docker compose exec yookassa-to-mynalog python /app/state_cli.py resolve-payment PAYMENT_ID --receipt RECEIPT_UUID
 ```
 
-`retry-payment` используйте только после ручной проверки, что чек не был
-создан. Денежные значения внутри сервиса обрабатываются через `Decimal`, а
+`retry-payment` используйте для однозначно отклонённых или неотправленных
+операций после устранения причины ошибки. Неопределённые записи сначала
+сверяются, без сброса статуса в новую запись. Денежные значения внутри сервиса обрабатываются через `Decimal`, а
 платежи не в RUB автоматически не отправляются в «Мой налог». Такой платёж
 фиксируется в `skipped_payments` как окончательно пропущенный, не остаётся в
 очереди и не блокирует checkpoint или Docker healthcheck.
@@ -627,9 +628,22 @@ docker compose exec yookassa-to-mynalog python /app/state_cli.py retry-refund RE
 docker compose exec yookassa-to-mynalog python /app/state_cli.py resolve-refund REFUND_ID --replacement-receipt RECEIPT_UUID
 ```
 
-`retry-refund` выбирает безопасную фазу по текущему статусу: для спорного
-аннулирования — повторяет только аннулирование, для спорного чека на остаток —
-только его создание. Используйте команду лишь после ручной сверки в ФНС.
+`retry-payment` разрешает новую запись только для `ready`, `rejected` и
+`retry_exhausted`, а также для исправленного `manual_error` с сохранённым
+доказательством сбоя до записи (`failure_phase=before_write`). Некорректные
+сумма, дата, описание или счётчики должны быть исправлены до повтора.
+Старые `manual_error` без этого признака не считаются безопасными для записи.
+Исключение после перехода в `creating` сохраняется как `unknown`: следующий
+запуск только сверяет результат. Кнопки Telegram и обработчики CLI/Telegram
+используют общее правило допуска; запрещённые повторы не предлагаются в меню.
+`retry-refund` разрешает повтор после однозначного отказа
+(`cancellation_rejected` / `replacement_rejected`) либо из `ready` / `cancelled`.
+Неопределённые и прерванные записи (`unknown`, `creating`, `cancellation_unknown`,
+`cancelling`, `replacement_unknown`, `creating_replacement`) нельзя сбросить
+в фазу новой записи ни через CLI, ни через Telegram. Дождитесь автоматической
+сверки; при необходимости проверьте ФНС вручную и свяжите подтверждённый результат
+через `resolve-payment` / `resolve-refund`. Отсутствие ответа не доказывает
+отсутствие чека. Повтор после однозначного отказа выполняйте после устранения причины.
 `resolve-refund` фиксирует UUID нового чека, созданного вручную.
 Для полного возврата с нулевым остатком параметр `--replacement-receipt` не
 указывается.

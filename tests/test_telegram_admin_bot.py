@@ -127,7 +127,7 @@ class TelegramAdminBotTests(unittest.TestCase):
         self.assertEqual("-100777", report["chat_id"])
         self.assertEqual(321, report["thread_id"])
 
-    def test_replacement_retry_resumes_after_cancellation_not_from_start(self):
+    def test_unknown_replacement_cannot_be_reset_for_another_write(self):
         self.bot.store.save({
             "pending_payments": [],
             "pending_refunds": [{
@@ -140,7 +140,7 @@ class TelegramAdminBotTests(unittest.TestCase):
         asyncio.run(self.bot.retry_queue_item("r", "refund-1"))
 
         item = self.bot.store.load()["pending_refunds"][0]
-        self.assertEqual("cancelled", item["status"])
+        self.assertEqual("replacement_unknown", item["status"])
 
     def test_start_cancels_report_id_input(self):
         self.bot.pending_input = "report_chat_id"

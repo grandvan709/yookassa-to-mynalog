@@ -841,7 +841,18 @@ class SyncManager:
                 )
             except Exception as e:
                 if isinstance(workflow, dict):
-                    workflow["status"] = "manual_error"
+                    phase = workflow.get("status")
+                    if phase == "ready":
+                        # creating is persisted before calling add_income. An
+                        # exception while still ready cannot follow that write.
+                        workflow["status"] = "manual_error"
+                        workflow["failure_phase"] = "before_write"
+                    elif phase in ("creating", "unknown"):
+                        workflow["status"] = "unknown"
+                        workflow["failure_phase"] = "write_uncertain"
+                    else:
+                        workflow["status"] = "manual_error"
+                        workflow["failure_phase"] = "unclassified"
                     workflow["error"] = f"[{type(e).__name__}] {str(e)[:160]}"
                     self.save_state()
                 logging.error(f"Ошибка восстановления pending-платежа: {e}")

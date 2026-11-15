@@ -192,7 +192,7 @@ class StateStoreTests(unittest.TestCase):
             "pending_refunds": [{
                 "refund_id": "refund-1",
                 "receipt_uuid": "receipt-1",
-                "status": "cancellation_unknown",
+                "status": "cancellation_rejected",
             }]
         })
 
@@ -215,7 +215,7 @@ class StateStoreTests(unittest.TestCase):
                 "currency": "RUB",
                 "created_at": "2026-01-01T00:00:00Z",
                 "description": "payment-1",
-                "status": "unknown",
+                "status": "rejected",
             }],
         })
 

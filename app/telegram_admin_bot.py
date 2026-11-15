@@ -16,6 +16,7 @@ from backup import run_backup
 from health_state import write_status
 from logging_config import setup_logging
 from state_store import ConcurrentRunError, StateStore
+from retry_policy import payment_retry_allowed, refund_retry_phase
 
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "data"))
@@ -250,14 +251,14 @@ class TelegramAdminBot:
             f"Ошибка: <code>{html.escape(str(item.get('error', '—'))[:700])}</code>",
         ]
         buttons = []
-        retryable = kind == "p" or status in {
-            "cancellation_unknown", "cancellation_rejected",
-            "replacement_unknown", "replacement_rejected", "creating_replacement",
-        }
+        phase = "ready" if kind == "p" and payment_retry_allowed(item) else (
+            refund_retry_phase(item) if kind == "r" else None
+        )
+        retryable = phase is not None
         if retryable:
             if kind == "p":
                 label = "🔁 Я проверил: чека нет — повторить"
-            elif status.startswith("cancellation"):
+            elif phase == "ready":
                 label = "🔁 Исходный чек активен — аннулировать"
             else:
                 label = "🔁 Чека на остаток нет — создать"
@@ -281,16 +282,19 @@ class TelegramAdminBot:
                 if item.get("currency") != "RUB":
                     await self.send("Повтор запрещён: валюта платежа не поддерживается.")
                     return
+                if not payment_retry_allowed(item):
+                    await self.send("Повтор записи запрещён: сначала сверьте результат операции в ФНС.")
+                    return
                 item["status"] = "ready"
                 item["queue_attempts"] = 0
                 item.pop("last_notified_error", None)
-            elif item.get("status") in {"cancellation_unknown", "cancellation_rejected"}:
-                item["status"] = "ready"
-            elif item.get("status") in {"replacement_unknown", "replacement_rejected", "creating_replacement"}:
-                item["status"] = "cancelled"
+                item.pop("failure_phase", None)
             else:
-                await self.send("Из этого статуса безопасный ручной повтор запрещён.")
-                return
+                phase = refund_retry_phase(item)
+                if phase is None:
+                    await self.send("Из этого статуса безопасный ручной повтор запрещён.")
+                    return
+                item["status"] = phase
             item.pop("error", None)
             self.store.save(state)
         except ConcurrentRunError:
