@@ -47,7 +47,11 @@ class SyncManager:
             f"{DATA_DIR}/sync_state.db",
             legacy_json_path=f"{LOG_DIR}/sync_state.json",
         )
-        self.state = self.load_state()
+        self.state_store.acquire_lock()
+        try:
+            self.state = self.load_state()
+        finally:
+            self.state_store.release_lock()
         refresh_token = self.state.get("refresh_token") or config.MOY_NALOG_REFRESH_TOKEN
         self.nalog = MoyNalogAPI(
             config.MOY_NALOG_LOGIN,
@@ -84,23 +88,7 @@ class SyncManager:
         else:
             self.notifier = None
 
-        report = self.state.get("receipt_reports", {})
-        report_chat_id = report.get("chat_id")
-        report_thread_id = report.get("thread_id")
-        if config.TELEGRAM_BOT_TOKEN and report_chat_id:
-            try:
-                report_thread_id = int(report_thread_id) if report_thread_id else None
-            except (TypeError, ValueError):
-                logging.warning("Некорректный ID темы отчётов; используется основной чат.")
-                report_thread_id = None
-            self.receipt_notifier = TelegramNotifier(
-                bot_token=config.TELEGRAM_BOT_TOKEN,
-                chat_id=str(report_chat_id),
-                thread_id=report_thread_id,
-                proxy=config.TELEGRAM_PROXY,
-            )
-        else:
-            self.receipt_notifier = None
+        self._configure_receipt_notifier()
 
         if config.SMTP_HOST and config.SMTP_USER and config.SMTP_PASSWORD and config.SMTP_TO_EMAIL:
             self.email_notifier = EmailNotifier(
@@ -117,6 +105,36 @@ class SyncManager:
         else:
             self.email_notifier = None
 
+        self.event_notifiers = [
+            n for n in (self.notifier, self.receipt_notifier, self.email_notifier) if n
+        ]
+
+    def _configure_receipt_notifier(self):
+        report = self.state.get("receipt_reports", {})
+        chat_id = report.get("chat_id")
+        thread_id = report.get("thread_id")
+        if config.TELEGRAM_BOT_TOKEN and chat_id:
+            try:
+                thread_id = int(thread_id) if thread_id else None
+            except (TypeError, ValueError):
+                logging.warning("Некорректный ID темы отчётов; используется основной чат.")
+                thread_id = None
+            self.receipt_notifier = TelegramNotifier(
+                bot_token=config.TELEGRAM_BOT_TOKEN,
+                chat_id=str(chat_id),
+                thread_id=thread_id,
+                proxy=config.TELEGRAM_PROXY,
+            )
+        else:
+            self.receipt_notifier = None
+
+    def _refresh_locked_state(self):
+        # Initialization and execution acquire separate locks. Another process
+        # can complete a payment, rotate a token or edit settings between them.
+        self.state = self.load_state()
+        self.nalog.refresh_token = self.state.get("refresh_token") or config.MOY_NALOG_REFRESH_TOKEN
+        self.nalog.token = None
+        self._configure_receipt_notifier()
         self.event_notifiers = [
             n for n in (self.notifier, self.receipt_notifier, self.email_notifier) if n
         ]
@@ -895,8 +913,9 @@ class SyncManager:
     async def retry_fns_queue(self):
         """Обработать только сохранённую очередь ФНС, не опрашивая ЮKassa."""
         self.state_store.acquire_lock()
-        write_status(DATA_DIR, "running", filename="fns_retry_status.json")
         try:
+            self._refresh_locked_state()
+            write_status(DATA_DIR, "running", filename="fns_retry_status.json")
             completed, manual = await self._resume_pending_payments(
                 stop_on_unavailable=True,
                 delay_seconds=config.FNS_RETRY_DELAY_SECONDS,
@@ -1220,6 +1239,8 @@ class SyncManager:
             state_store.acquire_lock()
 
         try:
+            if state_store:
+                self._refresh_locked_state()
             await self._sync_locked()
         finally:
             if state_store:

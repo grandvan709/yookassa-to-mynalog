@@ -152,6 +152,10 @@ class StateStore:
         return backup_path
 
     def load(self):
+        state = self._load_saved_state()
+        return state if state is not None else self._migrate_legacy_json()
+
+    def _load_saved_state(self):
         try:
             with self._connection() as connection:
                 row = connection.execute(
@@ -169,11 +173,33 @@ class StateStore:
                 raise StateStoreError("SQLite state должен содержать JSON-объект")
             return state
 
-        return self._migrate_legacy_json()
+        return None
 
     def _migrate_legacy_json(self):
         if not self.legacy_json_path or not self.legacy_json_path.exists():
             return None
+
+        # A nominally read-only load may need to import legacy data. Acquire
+        # through the normal TTL-aware path rather than weakening save's guard.
+        try:
+            with self._connection() as connection:
+                lock = connection.execute("SELECT owner FROM run_lock WHERE id = 1").fetchone()
+        except sqlite3.Error as e:
+            raise StateStoreError(f"не удалось прочитать блокировку legacy state: {e}") from e
+        acquired_here = not lock or lock["owner"] != self.owner
+        if acquired_here:
+            self.acquire_lock()
+        try:
+            # A competing writer may have populated SQLite since load's read.
+            state = self._load_saved_state()
+            if state is not None:
+                return state
+            return self._import_legacy_json()
+        finally:
+            if acquired_here:
+                self.release_lock()
+
+    def _import_legacy_json(self):
 
         try:
             with self.legacy_json_path.open("r", encoding="utf-8") as source:
@@ -204,6 +230,11 @@ class StateStore:
         try:
             with self._connection() as connection:
                 connection.execute("BEGIN IMMEDIATE")
+                lock = connection.execute(
+                    "SELECT owner FROM run_lock WHERE id = 1"
+                ).fetchone()
+                if lock and lock["owner"] != self.owner:
+                    raise ConcurrentRunError("сохранение state запрещено: блокировкой владеет другой процесс")
                 connection.execute(
                     """
                     INSERT INTO sync_state (id, data, updated_at)
