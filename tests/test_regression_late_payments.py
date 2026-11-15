@@ -17,6 +17,7 @@ class LatePaymentRegressionTests(unittest.TestCase):
                 asyncio.run(manager._resume_watched_payments())
                 self.assertEqual(["late"], [x["payment_id"] for x in manager.state["watched_payments"]])
                 item.status = "succeeded"
+                item.paid = True
                 asyncio.run(manager._resume_watched_payments())
                 self.assertEqual(["late"], manager.state["processed_payments"])
                 self.assertEqual(1, len(manager.nalog.add_calls))
