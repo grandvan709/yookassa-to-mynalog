@@ -965,6 +965,12 @@ class SyncManager:
 
     async def _resume_refund_adjustment(self, adjustment):
         status = adjustment.get("status")
+        if status == "cancelling":
+            # The previous process may have stopped before sending the request,
+            # or after FNS accepted it. Read the receipt before another write.
+            adjustment["status"] = "cancellation_unknown"
+            self.save_state()
+            status = "cancellation_unknown"
         remaining_amount = Decimal(adjustment["remaining_amount"])
         payment_date = datetime.fromisoformat(
             adjustment["payment_created_at"].replace('Z', '+00:00')
