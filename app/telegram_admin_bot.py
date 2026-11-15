@@ -281,12 +281,15 @@ class TelegramAdminBot:
                 if item.get("currency") != "RUB":
                     await self.send("Повтор запрещён: валюта платежа не поддерживается.")
                     return
+                if item.get("status") not in ("ready", "rejected", "retry_exhausted"):
+                    await self.send("Повтор записи запрещён: сначала сверьте результат операции в ФНС.")
+                    return
                 item["status"] = "ready"
                 item["queue_attempts"] = 0
                 item.pop("last_notified_error", None)
-            elif item.get("status") in {"cancellation_unknown", "cancellation_rejected"}:
+            elif item.get("status") == "cancellation_rejected":
                 item["status"] = "ready"
-            elif item.get("status") in {"replacement_unknown", "replacement_rejected", "creating_replacement"}:
+            elif item.get("status") == "replacement_rejected":
                 item["status"] = "cancelled"
             else:
                 await self.send("Из этого статуса безопасный ручной повтор запрещён.")

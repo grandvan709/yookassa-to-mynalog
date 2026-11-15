@@ -110,6 +110,9 @@ def retry_payment(store, payment_id):
         if workflow.get("currency") != "RUB":
             print("Нельзя повторить платёж в неподдерживаемой валюте.")
             return 2
+        if workflow.get("status") not in ("ready", "rejected", "retry_exhausted"):
+            print("Повтор записи запрещён: сначала сверьте результат операции в ФНС.")
+            return 2
         workflow["status"] = "ready"
         workflow["queue_attempts"] = 0
         workflow.pop("error", None)
@@ -184,12 +187,10 @@ def retry_refund(store, refund_id):
             print("Нельзя повторить: UUID исходного чека отсутствует.")
             return 2
         status = adjustment.get("status")
-        if status in ("cancellation_unknown", "cancellation_rejected"):
+        if status == "cancellation_rejected":
             adjustment["status"] = "ready"
             message = "повторное аннулирование исходного чека"
-        elif status in (
-            "replacement_unknown", "replacement_rejected", "creating_replacement"
-        ):
+        elif status == "replacement_rejected":
             adjustment["status"] = "cancelled"
             message = "повторное создание чека на остаток"
         elif status in ("ready", "cancelled"):
