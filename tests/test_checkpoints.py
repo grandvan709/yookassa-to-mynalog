@@ -482,7 +482,7 @@ class CheckpointTests(unittest.TestCase):
             [call[0] for call in manager.nalog.add_calls],
         )
 
-    def test_unpaid_payment_expires_locally_after_last_status_check(self):
+    def test_unpaid_payment_remains_watched_after_local_window(self):
         manager = manager_with([], [], FakeNalog())
         manager.state["watched_payments"] = [{
             "payment_id": "never-paid",
@@ -503,11 +503,10 @@ class CheckpointTests(unittest.TestCase):
 
         self.assertEqual([], completed)
         self.assertEqual(0, failures)
-        self.assertEqual([], manager.state["watched_payments"])
-        self.assertEqual(
-            "unpaid_expired",
-            manager.state["expired_unpaid_payments"][0]["status"],
-        )
+        self.assertEqual(["never-paid"], [
+            item["payment_id"] for item in manager.state["watched_payments"]
+        ])
+        self.assertEqual([], manager.state["expired_unpaid_payments"])
         manager.get_yookassa_payment.assert_awaited_once_with("never-paid")
 
     def test_payment_failure_keeps_old_checkpoint(self):
