@@ -629,7 +629,14 @@ docker compose exec yookassa-to-mynalog python /app/state_cli.py resolve-refund 
 ```
 
 `retry-payment` разрешает новую запись только для `ready`, `rejected` и
-`retry_exhausted`. `retry-refund` разрешает повтор после однозначного отказа
+`retry_exhausted`, а также для исправленного `manual_error` с сохранённым
+доказательством сбоя до записи (`failure_phase=before_write`). Некорректные
+сумма, дата, описание или счётчики должны быть исправлены до повтора.
+Старые `manual_error` без этого признака не считаются безопасными для записи.
+Исключение после перехода в `creating` сохраняется как `unknown`: следующий
+запуск только сверяет результат. Кнопки Telegram и обработчики CLI/Telegram
+используют общее правило допуска; запрещённые повторы не предлагаются в меню.
+`retry-refund` разрешает повтор после однозначного отказа
 (`cancellation_rejected` / `replacement_rejected`) либо из `ready` / `cancelled`.
 Неопределённые и прерванные записи (`unknown`, `creating`, `cancellation_unknown`,
 `cancelling`, `replacement_unknown`, `creating_replacement`) нельзя сбросить

@@ -4,6 +4,7 @@ from decimal import Decimal
 
 import config
 from state_store import StateStore
+from retry_policy import payment_retry_allowed, refund_retry_phase
 
 
 def create_store():
@@ -110,12 +111,13 @@ def retry_payment(store, payment_id):
         if workflow.get("currency") != "RUB":
             print("Нельзя повторить платёж в неподдерживаемой валюте.")
             return 2
-        if workflow.get("status") not in ("ready", "rejected", "retry_exhausted"):
+        if not payment_retry_allowed(workflow):
             print("Повтор записи запрещён: сначала сверьте результат операции в ФНС.")
             return 2
         workflow["status"] = "ready"
         workflow["queue_attempts"] = 0
         workflow.pop("error", None)
+        workflow.pop("failure_phase", None)
         workflow.pop("last_notified_error", None)
         store.save(state)
         print(f"Платёж {payment_id} поставлен на повторную обработку.")
@@ -186,21 +188,15 @@ def retry_refund(store, refund_id):
         if not adjustment.get("receipt_uuid"):
             print("Нельзя повторить: UUID исходного чека отсутствует.")
             return 2
-        status = adjustment.get("status")
-        if status == "cancellation_rejected":
-            adjustment["status"] = "ready"
-            message = "повторное аннулирование исходного чека"
-        elif status == "replacement_rejected":
-            adjustment["status"] = "cancelled"
-            message = "повторное создание чека на остаток"
-        elif status in ("ready", "cancelled"):
-            message = "повторную обработку"
-        else:
+        phase = refund_retry_phase(adjustment)
+        if phase is None:
             print(
-                f"Нельзя безопасно повторить возврат из статуса {status!r}. "
+                f"Нельзя безопасно повторить возврат из статуса {adjustment.get('status')!r}. "
                 "Сначала выполните ручную сверку."
             )
             return 2
+        adjustment["status"] = phase
+        message = "повторное аннулирование исходного чека" if phase == "ready" else "повторное создание чека на остаток"
         adjustment.pop("error", None)
         store.save(state)
         print(f"Возврат {refund_id} поставлен на {message}.")
