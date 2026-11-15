@@ -31,6 +31,8 @@ def payment(
         invoice_details=None,
         merchant_customer_id=None,
         status=status,
+        test=False,
+        paid=status == "succeeded",
     )
 
 
