@@ -14,7 +14,7 @@ from nalog_api import MoyNalogAPI
 from telegram_notifier import TelegramNotifier
 from email_notifier import EmailNotifier
 from utils import build_template_vars
-from state_store import ConcurrentRunError, StateStore
+from state_store import ConcurrentRunError, StateStore, StateStoreError
 from health_state import write_status
 from customer_receipt_delivery import (
     CustomerReceiptDelivery,
@@ -357,11 +357,9 @@ class SyncManager:
                     if status not in ("pending", "waiting_for_capture", "succeeded", "canceled"):
                         raise ValueError("ЮKassa вернула отсутствующий или неизвестный статус платежа")
                     if status == "succeeded":
-                        if payment.id in watched_ids:
-                            self._remove_watched_payment(payment.id)
-                            watched_ids.discard(payment.id)
-                            self.save_state()
-                        if payment.id not in skip_ids:
+                        # Watched IDs are handled by the per-ID path, which must
+                        # persist a workflow/exclusion before removing the watch.
+                        if payment.id not in skip_ids and payment.id not in watched_ids:
                             new_payments.append(payment)
                             skip_ids.add(payment.id)
                     elif status != "canceled" and payment.id not in skip_ids:
@@ -467,16 +465,52 @@ class SyncManager:
                 )
                 continue
 
-            status = getattr(payment, "status", None) or "pending"
+            status = getattr(payment, "status", None)
             watched["last_checked_at"] = now.isoformat()
             watched["last_status"] = status
+            if status not in ("pending", "waiting_for_capture", "succeeded", "canceled"):
+                failures += 1
+                watched["error"] = "ЮKassa вернула отсутствующий или неизвестный статус платежа"
+                self.save_state()
+                self._emit("on_payment_error", payment_id, watched["error"])
+                continue
             if status == "succeeded":
+                if payment_id in self.state["processed_payments"]:
+                    self._remove_watched_payment(payment_id)
+                    self.save_state()
+                    continue
+                try:
+                    # A previous process may have persisted the workflow before
+                    # removing its watch entry. Reuse that durable handoff.
+                    workflow = next((item for item in self.state["pending_payments"]
+                                     if (item if isinstance(item, str) else item.get("payment_id")) == payment_id), None)
+                    if workflow is None:
+                        workflow = self._prepare_payment_workflow(payment)
+                except StateStoreError:
+                    raise
+                except Exception as exc:
+                    failures += 1
+                    watched["error"] = f"Не удалось подготовить задачу платежа ({type(exc).__name__})"
+                    self.save_state()
+                    logging.warning("Платёж %s оставлен под наблюдением: %s", payment_id, watched["error"])
+                    self._emit("on_payment_error", payment_id, watched["error"])
+                    continue
+
+                # Only remove the watch after the workflow/exclusion is saved.
                 self._remove_watched_payment(payment_id)
                 self.save_state()
-                if payment_id in self.state["processed_payments"]:
+                try:
+                    result, amount = await self._resume_payment_workflow(workflow)
+                except StateStoreError:
+                    raise
+                except Exception as exc:
+                    # The workflow keeps its persisted phase (including creating
+                    # after a possible external write) for the next queue run.
+                    failures += 1
+                    reason = f"Ошибка обработки сохранённой задачи ({type(exc).__name__})"
+                    logging.warning("Платёж %s: %s", payment_id, reason)
+                    self._emit("on_payment_error", payment_id, reason)
                     continue
-                workflow = self._prepare_payment_workflow(payment)
-                result, amount = await self._resume_payment_workflow(workflow)
                 if result == "completed":
                     completed_amounts.append(amount)
                     logging.info(
@@ -487,7 +521,7 @@ class SyncManager:
                     self._emit(
                         "on_payment_error",
                         payment_id,
-                        f"валюта {workflow.get('currency')} не поддерживается",
+                        workflow.get("skip_reason") or f"валюта {workflow.get('currency')} не поддерживается",
                     )
                 else:
                     failures += 1
@@ -569,6 +603,18 @@ class SyncManager:
     def _prepare_payment_workflow(self, payment):
         # Never register sandbox or incomplete provider data in the real FNS account.
         # Do not default missing fields to a successful/live payment.
+        if getattr(payment, "test", None) is True:
+            amount = getattr(payment, "amount", None)
+            workflow = {
+                "payment_id": payment.id,
+                "amount": str(getattr(amount, "value", "")),
+                "currency": getattr(amount, "currency", None),
+                "created_at": getattr(payment, "created_at", None),
+                "status": "test_payment",
+                "skip_reason": "тестовый платёж ЮKassa исключён из регистрации НПД",
+            }
+            self._complete_skipped_payment_workflow(workflow, workflow["skip_reason"])
+            return workflow
         if getattr(payment, "test", None) is not False:
             raise ValueError("Регистрация НПД запрещена: платёж тестовый или признак test отсутствует")
         if getattr(payment, "status", None) != "succeeded" or getattr(payment, "paid", None) is not True:
@@ -606,6 +652,8 @@ class SyncManager:
             return "manual", None
 
         status = workflow.get("status")
+        if status == "test_payment":
+            return "skipped", None
         if status == "unsupported_currency":
             self._complete_skipped_payment_workflow(
                 workflow,
@@ -1301,7 +1349,7 @@ class SyncManager:
                         self._emit("on_payment_success", amount)
                     elif result == "skipped":
                         skipped += 1
-                        reason = (
+                        reason = workflow.get("skip_reason") or (
                             f"валюта {workflow.get('currency') or 'не указана'} "
                             "не поддерживается"
                         )

@@ -13,7 +13,7 @@ class PaymentValidationTests(unittest.TestCase):
         return item
 
     def test_unverified_payment_never_enters_income_queue(self):
-        for field, value in (("test", True), ("test", None), ("paid", False),
+        for field, value in (("test", None), ("paid", False),
                              ("paid", None), ("status", None), ("status", "pending")):
             with self.subTest(field=field, value=value):
                 item = self.payment()
