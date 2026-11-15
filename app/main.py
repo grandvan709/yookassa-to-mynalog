@@ -191,6 +191,29 @@ class SyncManager:
             if key not in state:
                 state[key] = default
 
+        # Older versions stopped observing nonterminal payments after a local
+        # timeout. Restore them once; only YooKassa can confirm cancellation.
+        watched_ids = {item.get("payment_id") for item in state["watched_payments"]}
+        finished_ids = set(state.get("processed_payments", [])) | {
+            item if isinstance(item, str) else item.get("payment_id")
+            for item in state["pending_payments"]
+        }
+        retained = []
+        for item in state["expired_unpaid_payments"]:
+            payment_id = item.get("payment_id")
+            if not payment_id or item.get("last_status") == "canceled":
+                retained.append(item)
+                continue
+            if payment_id not in watched_ids and payment_id not in finished_ids:
+                state["watched_payments"].append({
+                    "payment_id": payment_id,
+                    "created_at": item.get("created_at"),
+                    "last_status": item.get("last_status"),
+                    "last_checked_at": None,
+                })
+                watched_ids.add(payment_id)
+        state["expired_unpaid_payments"] = retained
+
         if config.REFUNDS_ENABLED and not state.get("refund_tracking_started_at"):
             now = _yookassa_timestamp(datetime.now(timezone.utc))
             # Старый set-sync-start заполнял last_refund_sync_time даже при
@@ -363,16 +386,8 @@ class SyncManager:
                             new_payments.append(payment)
                             skip_ids.add(payment.id)
                     elif status != "canceled" and payment.id not in skip_ids:
-                        watched = self._track_unpaid_payment(payment, status)
-                        created_at = _parse_timestamp(payment.created_at)
-                        if created_at and now - created_at >= timedelta(
-                            minutes=config.PENDING_PAYMENT_WATCH_MINUTES
-                        ):
-                            self._expire_unpaid_payment(watched, payment, status)
-                            expired_ids.add(payment.id)
-                            watched_ids.discard(payment.id)
-                        else:
-                            watched_ids.add(payment.id)
+                        self._track_unpaid_payment(payment, status)
+                        watched_ids.add(payment.id)
                 if not res.next_cursor:
                     break
                 params["cursor"] = res.next_cursor
@@ -409,9 +424,8 @@ class SyncManager:
                 "last_status": status,
             })
             logging.info(
-                "Неоплаченный платёж %s добавлен под наблюдение на %s минут.",
+                "Неоплаченный платёж %s добавлен под наблюдение до конечного статуса ЮKassa.",
                 payment.id,
-                config.PENDING_PAYMENT_WATCH_MINUTES,
             )
         self.save_state()
         return existing or watched[-1]
@@ -440,9 +454,9 @@ class SyncManager:
         })
         self.save_state()
         logging.info(
-            "Неоплаченный платёж %s снят с наблюдения спустя %s минут.",
+            "Платёж %s снят с наблюдения: ЮKassa подтвердила статус %s.",
             payment_id,
-            config.PENDING_PAYMENT_WATCH_MINUTES,
+            status,
         )
 
     async def _resume_watched_payments(self):
@@ -491,11 +505,7 @@ class SyncManager:
                     failures += 1
                 continue
 
-            created_at = _parse_timestamp(watched.get("created_at"))
-            age = now - created_at if created_at else timedelta.max
-            if status == "canceled" or age >= timedelta(
-                minutes=config.PENDING_PAYMENT_WATCH_MINUTES
-            ):
+            if status == "canceled":
                 self._expire_unpaid_payment(watched, payment, status)
             else:
                 self.save_state()
@@ -1621,7 +1631,7 @@ def print_banner():
             if config.REFUNDS_ENABLED
             else colorize("· выключены", "gray"),
         ),
-        ("Ожидание оплаты", f"{config.PENDING_PAYMENT_WATCH_MINUTES} мин."),
+        ("Окно поиска", f"{config.PENDING_PAYMENT_WATCH_MINUTES} мин."),
         (
             "Лимит очереди",
             str(config.FNS_QUEUE_MAX_ATTEMPTS)
